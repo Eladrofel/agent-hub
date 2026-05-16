@@ -1,0 +1,35 @@
+# =============================================================================
+# §2.1 sanitiser patterns — gateway-side
+# =============================================================================
+# Every POST /v1/events runs these patterns against the `summary` + `payload`
+# fields. A match HTTP-422s the request and writes a `sanitiser.blocked` audit
+# event.
+#
+# Mirrors the agent-side hook layer's pattern table in the concept-workflow
+# plugin's references/sanitiser-patterns.example.txt. Keep them in sync.
+#
+# Format: one Go regexp per line (POSIX-ish); '#' starts a comment.
+# Anchors are NOT auto-added; use ^ / $ explicitly if you want them.
+
+# RFC1918 IP literals (private networks)
+\b10\.\d+\.\d+\.\d+\b
+\b172\.(1[6-9]|2\d|3[01])\.\d+\.\d+\b
+\b192\.168\.\d+\.\d+\b
+
+# Forge URL leakage
+forgejo
+secureup-concepts
+192\.168\.200\.5
+
+# VM-local identity leaks
+agent-\d+@local
+agent-\d+@claude-\d+
+
+# Workspace-path literals
+/Users/[a-z0-9_-]+/
+~/projects/secureup
+
+# High-entropy tokens (probable PATs / API keys) — operator should tune
+# this regex per their secret-rotation discipline; the example below catches
+# Mattermost-style PAT tokens.
+[A-Za-z0-9]{26}

@@ -1,0 +1,27 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+crash.log
+
+# Environment + secrets
+.env
+*.local
+*.pem
+*.key
+
+# Go build outputs
+gateway/agent-hub
+gateway/agentctl
+gateway/*.test
+gateway/cover.out
+
+# Editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

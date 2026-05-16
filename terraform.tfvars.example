@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and adjust per environment.
+# terraform.tfvars is gitignored.
+
+# Proxmox node (defaults are fine for the apollo cluster)
+# proxmox_host = "10.0.1.4"
+# proxmox_node = "apollo"
+
+# VM identity + sizing
+# vm_name      = "agent-hub"
+# vm_cpu_cores = 2
+# vm_memory    = 4096
+# vm_disk_size = 40
+
+# Network — change the IP / MAC if 10.0.5.50 is taken
+# vm_ip_address  = "10.0.5.50/16"
+# vm_mac_address = "BC:24:11:10:05:50"
+
+# SSH
+# vm_user             = "dale"
+# ssh_public_key_path = "~/.ssh/dale.pem.pub"
