@@ -36,6 +36,13 @@ resource "proxmox_virtual_environment_vm" "agent_hub_vm" {
   pool_id    = var.vm_pool
   protection = true
 
+  # Force-stop on destroy rather than ACPI-shutdown. ACPI requires the VM's
+  # OS to be responsive — if cloud-init has broken or the OS is hung, ACPI
+  # shutdown hits a multi-minute timeout. Force-stop is immediate; the VM
+  # has no persistent state we care about (Postgres data is in a volume
+  # the VM resource doesn't own).
+  stop_on_destroy = true
+
   description = <<-EOT
     Managed by Terraform (agent-hub).
     Postgres-backed agent-events ledger + Mattermost outbox/inbox.
