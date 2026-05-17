@@ -210,3 +210,34 @@ var errSilent = errors.New("silent")
 func IsSilent(err error) bool {
 	return errors.Is(err, errSilent)
 }
+
+// validationError handles a pre-runCall arg-validation failure with the same
+// best-effort / strict posture runCall uses. Audits, writes to stderr, then
+// returns either err (strict) or errSilent (best-effort, exit 0).
+//
+// Pass auditor=nil only if config-load already failed and no auditor exists;
+// the function will skip the audit step in that case. Otherwise the
+// recommended pattern is: load config → construct auditor → validate args
+// (calling validationError on failure) → build body → runCall.
+//
+// Why this exists: a bare `return fmt.Errorf("--X is required")` from RunE
+// gets swallowed by cobra's SilenceErrors:true at root, so the operator
+// sees nothing on stderr and the process exits 1 with no audit record.
+// validationError closes both gaps.
+func validationError(cmd *cobra.Command, auditor *audit.Writer, cmdName string, err error) error {
+	if auditor != nil {
+		auditor.Append(audit.Entry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Command:   cmdName,
+			Outcome:   "validation_error",
+			Error:     err.Error(),
+			Strict:    strictFlag(cmd),
+		})
+	}
+	if strictFlag(cmd) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "agentctl %s: %v; halting (--strict)\n", cmdName, err)
+		return err
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "agentctl %s: %v; continuing (best-effort)\n", cmdName, err)
+	return errSilent
+}

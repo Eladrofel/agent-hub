@@ -53,8 +53,16 @@ func newEventEmitCmd() *cobra.Command {
 				}
 				return err
 			}
+			// Auditor constructed BEFORE validation so arg-validation failures
+			// are audited (validation_error outcome). See validationError doc.
+			auditor := audit.New(cfg.AuditLog)
+
 			if eventType == "" {
-				return fmt.Errorf("--type is required")
+				err := validationError(cmd, auditor, "event emit", fmt.Errorf("--type is required"))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
 			}
 			if projectSlug == "" {
 				projectSlug = cfg.ProjectSlug
@@ -113,7 +121,6 @@ func newEventEmitCmd() *cobra.Command {
 			}
 
 			cl := client.New(cfg)
-			auditor := audit.New(cfg.AuditLog)
 
 			// Special-case the sanitiser-blocked outcome so stderr lines are
 			// unambiguous. The wrapper around runCall is just here to pre-
@@ -138,7 +145,27 @@ func newEventEmitCmd() *cobra.Command {
 			}, func(ctx context.Context) (int, []byte, error) {
 				status, raw, err := cl.Do(ctx, "POST", "/v1/events", body)
 				if err != nil && errors.Is(err, client.ErrSanitiserBlocked) {
-					// Wrap so the audit + stderr line make the cause obvious.
+					// Surface which §2.1 pattern fired + which field tripped
+					// it, so the operator can tell apart the dozen-odd
+					// patterns without reading the gateway's audit log. The
+					// gateway returns these as top-level JSON fields on the
+					// 422 response (sanitiserBlockedResponse). We never echo
+					// the offending content itself — that's the whole point
+					// of the block.
+					var apiErr *client.APIError
+					if errors.As(err, &apiErr) {
+						return status, raw, fmt.Errorf(
+							"sanitiser blocked event_type=%s (matched_pattern=%q matched_field=%s blocked_event_id=%s; offending content NOT stored): %w",
+							eventType,
+							apiErr.Envelope.MatchedPattern,
+							apiErr.Envelope.MatchedField,
+							apiErr.Envelope.BlockedEventID,
+							err,
+						)
+					}
+					// Defensive fallback — Do() should always wrap non-2xx in
+					// *APIError, so this branch is unreachable unless the
+					// client contract changes.
 					return status, raw, fmt.Errorf("sanitiser blocked event_type=%s (offending content NOT stored): %w", eventType, err)
 				}
 				return status, raw, err

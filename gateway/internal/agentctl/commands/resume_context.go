@@ -28,15 +28,20 @@ func NewResumeContextCmd() *cobra.Command {
 				}
 				return err
 			}
+			auditor := audit.New(cfg.AuditLog)
+
 			if claudeSessionID == "" {
 				claudeSessionID = os.Getenv("CLAUDE_SESSION_ID")
 			}
 			if claudeSessionID == "" {
-				return fmt.Errorf("--claude-session-id is required (or set CLAUDE_SESSION_ID env)")
+				err := validationError(cmd, auditor, "resume-context", fmt.Errorf("--claude-session-id is required (or set CLAUDE_SESSION_ID env)"))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
 			}
 
 			cl := client.New(cfg)
-			auditor := audit.New(cfg.AuditLog)
 
 			return runCall(cmd.Context(), callOpts{
 				cmdName:    "resume-context",

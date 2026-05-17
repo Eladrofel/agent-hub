@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"time"
 
@@ -34,8 +35,14 @@ func newInboxPollCmd() *cobra.Command {
 				}
 				return err
 			}
+			auditor := audit.New(cfg.AuditLog)
+
 			if since != "" {
 				if _, err := time.Parse(time.RFC3339, since); err != nil {
+					err := validationError(cmd, auditor, "inbox poll", fmt.Errorf("--since: %w", err))
+					if IsSilent(err) {
+						return nil
+					}
 					return err
 				}
 			}
@@ -47,7 +54,6 @@ func newInboxPollCmd() *cobra.Command {
 			}
 
 			cl := client.New(cfg)
-			auditor := audit.New(cfg.AuditLog)
 
 			return runCall(cmd.Context(), callOpts{
 				cmdName:    "inbox poll",

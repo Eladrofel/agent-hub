@@ -40,11 +40,21 @@ func NewCheckpointCmd() *cobra.Command {
 				}
 				return err
 			}
+			auditor := audit.New(cfg.AuditLog)
+
 			if claudeSessionID == "" {
-				return fmt.Errorf("--claude-session-id is required")
+				err := validationError(cmd, auditor, "checkpoint", fmt.Errorf("--claude-session-id is required"))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
 			}
 			if summary == "" {
-				return fmt.Errorf("--summary is required")
+				err := validationError(cmd, auditor, "checkpoint", fmt.Errorf("--summary is required"))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
 			}
 
 			body := map[string]any{
@@ -84,7 +94,6 @@ func NewCheckpointCmd() *cobra.Command {
 			}
 
 			cl := client.New(cfg)
-			auditor := audit.New(cfg.AuditLog)
 
 			return runCall(cmd.Context(), callOpts{
 				cmdName:  "checkpoint",

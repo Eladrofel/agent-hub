@@ -68,6 +68,21 @@ func Load(requireAuth bool) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read token file %q: %w", cfg.TokenFile, err)
 	}
+	// Refuse to load a world/group-readable bearer file. Overriding the
+	// reviewer's "warn or refuse-in-strict" suggestion with refuse-always: a
+	// leaked bearer is a leaked bearer regardless of --strict posture, and
+	// agent VMs will eventually be multi-tenant. Operators get a paste-
+	// ready chmod hint in the error message.
+	info, statErr := os.Stat(cfg.TokenFile)
+	if statErr != nil {
+		return nil, fmt.Errorf("stat token file %q: %w", cfg.TokenFile, statErr)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf(
+			"token file %q has insecure permissions %o; expected 0600 (run: chmod 600 %s)",
+			cfg.TokenFile, info.Mode().Perm(), cfg.TokenFile,
+		)
+	}
 	cfg.Token = strings.TrimSpace(string(raw))
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("token file %q is empty", cfg.TokenFile)

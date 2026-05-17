@@ -34,10 +34,20 @@ var (
 
 // ErrorEnvelope mirrors gateway/internal/server.errorResponse. Fields are
 // optional so partial gateway responses still parse.
+//
+// The MatchedPattern / MatchedField / BlockedEventID fields are top-level on
+// the gateway's 422 sanitiser_blocked response (see
+// gateway/internal/server/handlers_events.go sanitiserBlockedResponse) — NOT
+// nested under Details — so they must be decoded directly here. Without
+// these, agentctl's stderr line cannot tell the operator which §2.1 pattern
+// fired or which field tripped it.
 type ErrorEnvelope struct {
-	Error   string          `json:"error"`
-	Message string          `json:"message,omitempty"`
-	Details json.RawMessage `json:"details,omitempty"`
+	Error          string          `json:"error"`
+	Message        string          `json:"message,omitempty"`
+	Details        json.RawMessage `json:"details,omitempty"`
+	MatchedPattern string          `json:"matched_pattern,omitempty"`
+	MatchedField   string          `json:"matched_field,omitempty"`
+	BlockedEventID string          `json:"blocked_event_id,omitempty"`
 }
 
 // APIError wraps a non-2xx gateway response. Implements errors.Is against

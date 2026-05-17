@@ -193,12 +193,49 @@ func TestSessionStart_BuildsCorrectRequest(t *testing.T) {
 }
 
 func TestSessionStart_RequiresClaudeSessionID(t *testing.T) {
+	// HIGH #2 fix: arg-validation failures used to silently exit 1 (cobra's
+	// SilenceErrors:true swallowed them). They now go through validationError
+	// which respects the best-effort/strict posture and always writes stderr.
 	f := newFixture(t)
 	err := f.run(NewSessionStartCmd())
-	// Cobra surfaces RunE errors directly; we treat this as a usage error,
-	// so it propagates regardless of --strict.
+	if err != nil {
+		t.Fatalf("best-effort default: validation should exit 0 with stderr, got %v", err)
+	}
+	if !strings.Contains(f.stderr.String(), "--claude-session-id is required") {
+		t.Fatalf("stderr should explain the validation failure: %q", f.stderr.String())
+	}
+	if !strings.Contains(f.stderr.String(), "continuing (best-effort)") {
+		t.Fatalf("stderr should mark posture: %q", f.stderr.String())
+	}
+}
+
+func TestSessionStart_RequiresClaudeSessionID_StrictPropagates(t *testing.T) {
+	f := newFixture(t)
+	err := f.run(NewSessionStartCmd(), "--strict")
 	if err == nil {
-		t.Fatal("expected error when --claude-session-id missing")
+		t.Fatal("strict mode: validation should propagate as error")
+	}
+	if !strings.Contains(f.stderr.String(), "halting (--strict)") {
+		t.Fatalf("stderr should mark strict halt: %q", f.stderr.String())
+	}
+}
+
+func TestSessionStart_ValidationFailureIsAudited(t *testing.T) {
+	// HIGH #2 fix: arg-validation failures must produce an audit entry so
+	// the operator can correlate a missing-flag exit with the call site.
+	f := newFixture(t)
+	if err := f.run(NewSessionStartCmd()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	raw, err := os.ReadFile(f.auditPath)
+	if err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if !strings.Contains(string(raw), `"outcome":"validation_error"`) {
+		t.Fatalf("audit log should record validation_error: %q", string(raw))
+	}
+	if !strings.Contains(string(raw), `"command":"session-start"`) {
+		t.Fatalf("audit log should name the command: %q", string(raw))
 	}
 }
 
@@ -262,7 +299,7 @@ func TestEventEmit_BuildsCorrectRequest(t *testing.T) {
 func TestEventEmit_SanitiserBlockedBestEffortExits0(t *testing.T) {
 	f := newFixture(t)
 	f.responseStatus = 422
-	f.responseBody = `{"error":"sanitiser_blocked","message":"blocked","matched_pattern":"x","matched_field":"summary","blocked_event_id":"audit-id"}`
+	f.responseBody = `{"error":"sanitiser_blocked","message":"blocked","matched_pattern":"\\b10\\.\\d+\\.\\d+\\.\\d+\\b","matched_field":"summary","blocked_event_id":"audit-id-7"}`
 
 	err := f.runNested(NewEventCmd(), "emit",
 		"--type", "progress.updated",
@@ -271,8 +308,25 @@ func TestEventEmit_SanitiserBlockedBestEffortExits0(t *testing.T) {
 	if err != nil {
 		t.Fatalf("best-effort default: err should be nil, got %v", err)
 	}
-	if !strings.Contains(f.stderr.String(), "sanitiser blocked") {
-		t.Fatalf("stderr = %q", f.stderr.String())
+	stderr := f.stderr.String()
+	if !strings.Contains(stderr, "sanitiser blocked") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	// BLOCKER #1 fix: the stderr line MUST surface which §2.1 pattern fired
+	// and which field tripped it, so the operator can fix the offending
+	// content without re-fetching the gateway audit log. The fields are
+	// top-level JSON on the gateway's 422 response and must be decoded by
+	// ErrorEnvelope (not stuffed into Details).
+	// %q re-escapes backslashes, so the literal `\b` in the pattern shows up
+	// as `\\b` in the stderr line. Match what the formatter actually emits.
+	if !strings.Contains(stderr, `matched_pattern="\\b10\\.\\d+\\.\\d+\\.\\d+\\b"`) {
+		t.Errorf("stderr missing matched_pattern; got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "matched_field=summary") {
+		t.Errorf("stderr missing matched_field; got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "blocked_event_id=audit-id-7") {
+		t.Errorf("stderr missing blocked_event_id; got: %s", stderr)
 	}
 }
 
@@ -445,10 +499,23 @@ func TestInboxPoll_AcceptsSinceFlag(t *testing.T) {
 }
 
 func TestInboxPoll_RejectsInvalidSince(t *testing.T) {
+	// HIGH #2 fix: invalid --since used to silently exit 1; now goes through
+	// validationError so best-effort exits 0 with stderr, strict propagates.
 	f := newFixture(t)
 	err := f.runNested(NewInboxCmd(), "poll", "--since", "not-a-date")
+	if err != nil {
+		t.Fatalf("best-effort default: should exit 0 with stderr, got %v", err)
+	}
+	if !strings.Contains(f.stderr.String(), "--since") {
+		t.Fatalf("stderr should explain the parse failure: %q", f.stderr.String())
+	}
+}
+
+func TestInboxPoll_RejectsInvalidSince_StrictPropagates(t *testing.T) {
+	f := newFixture(t)
+	err := f.runNested(NewInboxCmd(), "poll", "--strict", "--since", "not-a-date")
 	if err == nil {
-		t.Fatal("expected validation error")
+		t.Fatal("strict mode: invalid --since should propagate")
 	}
 }
 

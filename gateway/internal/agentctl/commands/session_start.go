@@ -38,8 +38,14 @@ func NewSessionStartCmd() *cobra.Command {
 				}
 				return err
 			}
+			auditor := audit.New(cfg.AuditLog)
+
 			if claudeSessionID == "" {
-				return fmt.Errorf("--claude-session-id is required")
+				err := validationError(cmd, auditor, "session-start", fmt.Errorf("--claude-session-id is required"))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
 			}
 			if projectSlug == "" {
 				projectSlug = cfg.ProjectSlug
@@ -81,7 +87,6 @@ func NewSessionStartCmd() *cobra.Command {
 			}
 
 			cl := client.New(cfg)
-			auditor := audit.New(cfg.AuditLog)
 
 			return runCall(cmd.Context(), callOpts{
 				cmdName:  "session-start",
