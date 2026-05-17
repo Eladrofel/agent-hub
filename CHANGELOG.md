@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.1] — 2026-05-17
+
+`agentctl` client implementation. Closes the v0.1.0 known-limitation "agentctl subcommands are still stubbed" — Component B's plugin hooks (session-start, post-tool-use, pre-compact, stop, session-end on plugin v0.2.9) now reach real handlers via this binary.
+
+### Added — `agentctl` CLI
+
+- **8 subcommands wrapping the v0.1.0 gateway endpoints:** `register-agent`, `session-start`, `session-end`, `event emit`, `checkpoint`, `resume-context`, `inbox poll`, `health`. Distributed as a single static Go binary cross-compiled for `darwin-arm64` (operator Mac) and `linux-amd64` (agent VMs).
+- **Shared infrastructure** (`gateway/internal/agentctl/`):
+  - `config/` — env-var loader (`AGENT_HUB_URL`, `AGENT_HUB_TOKEN_FILE`, `AGENT_NAME`, `AGENT_PROJECT_SLUG`, `AGENT_HUB_AUDIT_LOG`). **Refuses to load** token files with group/world bits set (mode & 0o077 != 0); emits the paste-ready `chmod 600 <file>` hint.
+  - `client/` — HTTP client with bearer-auth, 5s connect / 30s overall timeouts, JSON error-envelope decode into a sentinel-error set (`ErrSanitiserBlocked`, `ErrUnauthorized`, `ErrNotFound`, `ErrServerUnavailable`, `ErrBadRequest`) that satisfies `errors.Is`.
+  - `audit/` — append-only JSONL writer at `$AGENT_HUB_AUDIT_LOG` (default `$HOME/.local/state/agent-events/audit.log`); itself best-effort so audit failures never block the caller.
+- **Best-effort posture by default** per design plan §"Fail-closed semantics": on any error → audit entry + stderr line + exit 0. The `--strict` persistent flag overrides to exit 1 for hard-fail callers (e.g., the orchestrator's `review-posted` step). The `health` subcommand always exits 1 on failure regardless of `--strict` (a best-effort health check is nonsense).
+- **Output shapes:** read commands (`resume-context`, `inbox poll`, `health`) emit JSON on stdout (`--pretty` for indented); mutating commands emit a one-line success summary on stderr (`--json` for the full response body on stdout). Clean for pipe-into-jq usage.
+- **Sanitiser-blocked errors surface `matched_pattern`, `matched_field`, and `blocked_event_id` to stderr** so the operator sees exactly which §2.1 pattern fired without the offending content being echoed back.
+
+### Added — build tooling
+
+- **Makefile** at repo root with `agentctl-darwin-arm64`, `agentctl-linux-amd64`, `agentctl-all`, `clean` targets. CGO disabled, `-ldflags="-s -w"` strip, version + commit baked in via ldflags. Output: `bin/agentctl-*` (gitignored).
+
+### Tests
+
+- **40 new tests passing** (6 audit + 8 client + 7 config + 19 commands unit) + 7 integration tests that skip without `AGENT_HUB_TEST_DATABASE_URL`. Cumulative test count: 67 passing.
+- **End-to-end live smoke** validated against the running gateway: 8 subcommands happy-path; sanitiser-block path surfaces pattern/field; arg-validation fails best-effort with stderr + exit 0 / `--strict` with exit 1; chmod-644 token file refused at config-load with actionable hint.
+
+### Reviewer findings landed
+
+Code-review-specialist flagged 1 BLOCKER + 2 HIGH + 1 paired MEDIUM; all fixed before merge (commit `2180676` on top of the implementation commit `6a2f612`).
+
+### Known limitations (v0.1.1)
+
+- **Outbox-worker + inbox-webhook stubs remain.** Component C is the v0.1.2 release (bumped from v0.1.1 since agentctl took that slot).
+- **Tasks / handoffs / decisions / locks endpoints are deferred to v0.1.2.** Not called by plugin v0.2.8 / v0.2.9 hooks; first matter at plugin v0.2.13 (Component D-3).
+- **agentctl operator-role cross-agent reads not yet exposed.** The gateway supports them; agentctl's `inbox poll` only polls self. Add `--agent-name` flag in v0.1.x when use-case demands it.
+- **Polish items from the v0.1.1 review:** cmd-name in chmod-perms stderr says "emit" not "event emit" (cobra's `cmd.Name()` quirk); chmod-perms stderr line missing the `continuing (best-effort)` posture marker the other errors carry. Both LOW; fix in v0.1.x.
+
+### Plugin coupling
+
+`concept-workflow` plugin **v0.2.8+** (Component A — operator skills) and **v0.2.9+** (Component B — lifecycle hooks) consume this release. Plugin v0.2.9 hooks were **functionally broken** in v0.1.0 (calling stubbed agentctl); v0.1.1 closes that gap.
+
 ## [0.1.0] — 2026-05-17
 
 Gateway endpoint flesh-out. Unblocks `concept-workflow` plugin v0.2.8 + v0.2.9 lifecycle hooks (Component B) and the operator-side `/setup-agent-events` flow. Outbox-worker + inbox-webhook remain stubbed; those ship in v0.1.1 alongside ROADMAP `#10` Component C.
