@@ -19,7 +19,13 @@ LDFLAGS := -s -w \
 	-X main.version=$(VERSION) \
 	-X main.commit=$(COMMIT)
 
-.PHONY: agentctl-all agentctl-darwin-arm64 agentctl-linux-amd64 clean
+.PHONY: agentctl-all agentctl-darwin-arm64 agentctl-linux-amd64 clean verify-cloud-init
+
+# Render cloud-init/user-data.yaml.tpl with sample values + validate it parses
+# as YAML. Catches the indent() whitespace-bug class before `tofu apply` pushes
+# a broken user-data to the VM. See scripts/verify-cloud-init.sh for details.
+verify-cloud-init:
+	@./scripts/verify-cloud-init.sh
 
 agentctl-all: agentctl-darwin-arm64 agentctl-linux-amd64
 

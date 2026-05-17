@@ -27,6 +27,7 @@ packages:
   - git
   - jq
   - postgresql-client-16
+  - qemu-guest-agent
   - unattended-upgrades
   - ufw
 
@@ -37,7 +38,7 @@ write_files:
     owner: root:root
     permissions: '0644'
     content: |
-${indent(6, docker_compose_content)}
+      ${indent(6, docker_compose_content)}
   # .env stub — operator must populate post-boot before bringing the stack up.
   - path: /opt/agent-hub/.env
     owner: root:root
@@ -136,6 +137,11 @@ ${indent(6, docker_compose_content)}
       17 3 * * * root /usr/local/bin/agent-hub-archive-events.sh
 
 runcmd:
+  # Enable qemu-guest-agent so `qm guest exec` / `qm guest cmd` work for debugging.
+  - systemctl enable --now qemu-guest-agent
+  # Enable serial console getty as a secondary recovery path (`qm terminal 111`).
+  # Ubuntu cloud images already route grub + kernel to ttyS0; we just need the getty.
+  - systemctl enable --now serial-getty@ttyS0
   # Install Docker via Docker's official convenience script (matches terraform-mattermost)
   - curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
   - sh /tmp/get-docker.sh

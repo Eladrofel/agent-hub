@@ -17,9 +17,9 @@ resource "proxmox_virtual_environment_file" "cloud_init_user_data" {
 
   source_raw {
     data = templatefile("${path.module}/cloud-init/user-data.yaml.tpl", {
-      hostname              = var.vm_name
-      username              = var.vm_user
-      ssh_key               = trimspace(file(pathexpand(var.ssh_public_key_path)))
+      hostname               = var.vm_name
+      username               = var.vm_user
+      ssh_key                = trimspace(file(pathexpand(var.ssh_public_key_path)))
       docker_compose_content = file("${path.module}/docker-compose.yml")
     })
     file_name = "cloud-init-${var.vm_name}-user-data.yaml"
@@ -59,6 +59,10 @@ resource "proxmox_virtual_environment_vm" "agent_hub_vm" {
     enabled = true
   }
 
+  operating_system {
+    type = "l26"
+  }
+
   cpu {
     cores   = var.vm_cpu_cores
     sockets = 1
@@ -80,6 +84,8 @@ resource "proxmox_virtual_environment_vm" "agent_hub_vm" {
     bridge      = var.vm_bridge
     mac_address = var.vm_mac_address
   }
+
+  serial_device {}
 
   initialization {
     datastore_id = var.vm_storage
