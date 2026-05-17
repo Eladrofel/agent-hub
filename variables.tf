@@ -39,9 +39,9 @@ variable "vm_memory" {
 }
 
 variable "vm_disk_size" {
-  description = "Root disk size in GB (40 GB; Postgres data + room for archive)"
+  description = "Root disk size in GB (60 GB; provides ~10x headroom over steady-state ~6.6 GB for PG16 + Ubuntu + Docker images + logs + JSONL archives, per CHANGELOG sizing analysis)"
   type        = number
-  default     = 40
+  default     = 60
 
   validation {
     condition     = var.vm_disk_size >= 20
