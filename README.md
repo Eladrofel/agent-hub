@@ -28,14 +28,13 @@ terraform-agent-hub/
 ├── terraform.tfvars.example    ← copy to terraform.tfvars; gitignored
 ├── cloud-init/
 │   └── user-data.yaml.tpl      ← VM bootstrap
-├── db/
-│   └── migrations/001_init.sql ← 11-table schema
 ├── gateway/
 │   ├── Dockerfile
 │   ├── go.mod
 │   ├── cmd/agent-hub/main.go   ← server binary (serve / outbox-worker / inbox-webhook subcommands)
 │   ├── cmd/agentctl/main.go    ← CLI binary, distributed to agent VMs + Mac
 │   ├── internal/               ← package skeletons (auth / events / sessions / outbox / inbox / sanitiser / store)
+│   ├── db/migrations/001_init.sql ← 11-table schema; embedded into the binary and applied by the gateway's migrate runner on boot
 │   └── sanitiser-patterns.txt  ← §2.1 leak patterns applied at write time
 ├── cli/install.sh              ← SSH-installable on agent VMs (cp binary + chmod)
 ├── scripts/                    ← helpers

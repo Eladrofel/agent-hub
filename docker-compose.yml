@@ -11,7 +11,11 @@ services:
       - "127.0.0.1:54329:5432"  # localhost-only by default; expose via Terraform on the VM
     volumes:
       - agent_hub_pg:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+      # Migrations are applied by the gateway container on startup via the
+      # embedded migration runner (`agent-hub migrate`, also run by `serve`).
+      # That keeps schema_migrations honest and avoids the dual-source bug
+      # where /docker-entrypoint-initdb.d applies SQL without marking it
+      # applied in the runner's tracking table.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent_hub} -d ${POSTGRES_DB:-agent_hub}"]
       interval: 10s
@@ -41,7 +45,12 @@ services:
       timeout: 5s
       retries: 5
 
+  # outbox-worker and inbox-webhook ship in v0.1.1 alongside ROADMAP #10
+  # Component C. v0.1.0 implements `agent-hub serve` only; these stubs would
+  # crash-loop, so they're behind the `v0.1.1` compose profile (start them
+  # explicitly with `docker compose --profile v0.1.1 up -d` once they're real).
   outbox-worker:
+    profiles: ["v0.1.1"]
     build: ./gateway
     container_name: agent-hub-outbox
     restart: unless-stopped
@@ -58,6 +67,7 @@ services:
         condition: service_healthy
 
   inbox-webhook:
+    profiles: ["v0.1.1"]
     build: ./gateway
     container_name: agent-hub-inbox-webhook
     restart: unless-stopped

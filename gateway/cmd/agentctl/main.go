@@ -38,6 +38,8 @@ import (
 )
 
 var (
+	// agentctl wire-up to the gateway endpoints ships in v0.1.0; the binary
+	// version tracks the agent-hub release line.
 	version = "0.1.0-dev"
 	commit  = "unknown"
 )
