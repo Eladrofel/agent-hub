@@ -86,8 +86,7 @@ resource "proxmox_virtual_environment_vm" "agent_hub_vm" {
 
     ip_config {
       ipv4 {
-        address = var.vm_ip_address
-        gateway = var.vm_gateway
+        address = "dhcp"
       }
     }
 

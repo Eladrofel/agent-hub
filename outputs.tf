@@ -9,7 +9,7 @@ output "vm_name" {
 }
 
 output "vm_ip_address" {
-  description = "Configured static IP"
+  description = "Expected IP (from DHCP reservation mapped to vm_mac_address). Verify post-boot via `qm guest cmd <vmid> network-get-interfaces` on the Proxmox host or `ssh dale@<expected-ip> hostname`."
   value       = var.vm_ip_address
 }
 
@@ -36,17 +36,20 @@ output "post_provision_checklist" {
 
     2. Verify the stack:
        ssh ${var.vm_user}@${split("/", var.vm_ip_address)[0]} 'sudo docker ps'
-       Expected: agent-hub-postgres + agent-hub-gateway + agent-hub-outbox +
-                 agent-hub-inbox-webhook (all 'healthy')
+       Expected (v0.1.1): agent-hub-postgres + agent-hub-gateway (both 'healthy').
+       agent-hub-outbox + agent-hub-inbox-webhook are behind the 'v0.1.1' compose
+       profile and won't start by default — they ship in agent-hub v0.1.2
+       (Component C). To bring them up later: `docker compose --profile v0.1.1 up -d`.
 
-    3. Apply Postgres migrations (idempotent — already run on first compose up
-       via /docker-entrypoint-initdb.d, but verify):
+    3. Verify Postgres schema (applied by the gateway's embedded migrate runner
+       on boot — see internal/store/migrate.go):
        ssh ${var.vm_user}@${split("/", var.vm_ip_address)[0]} \\
          'sudo docker exec -i agent-hub-postgres psql -U agent_hub agent_hub \\
           -c "\\dt"'
        Expected: 11 tables (projects, agents, agent_sessions, tasks, events,
                  session_checkpoints, handoffs, decisions, agent_locks,
-                 artifacts, mattermost_outbox, mattermost_inbox).
+                 artifacts, mattermost_outbox, mattermost_inbox) plus
+                 schema_migrations tracking table = 12 rows.
 
     4. From operator Mac, point /setup-agent-events at this VM:
        Edit <consuming-workspace>/.claude/concept-workflow.local.md

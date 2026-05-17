@@ -9,6 +9,7 @@ crash.log
 
 # Environment + secrets
 .env
+.envrc
 *.local
 *.pem
 *.key

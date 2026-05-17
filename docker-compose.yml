@@ -24,6 +24,7 @@ services:
 
   gateway:
     build: ./gateway
+    image: agent-hub-gateway:latest
     container_name: agent-hub-gateway
     restart: unless-stopped
     command: ["serve"]
@@ -52,6 +53,7 @@ services:
   outbox-worker:
     profiles: ["v0.1.1"]
     build: ./gateway
+    image: agent-hub-gateway:latest
     container_name: agent-hub-outbox
     restart: unless-stopped
     command: ["outbox-worker"]
@@ -69,6 +71,7 @@ services:
   inbox-webhook:
     profiles: ["v0.1.1"]
     build: ./gateway
+    image: agent-hub-gateway:latest
     container_name: agent-hub-inbox-webhook
     restart: unless-stopped
     command: ["inbox-webhook"]

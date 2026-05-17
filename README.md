@@ -4,7 +4,7 @@ Terraform module + service code for the **agent-events hub** — a Postgres-back
 
 ## What it does
 
-Provisions a single Ubuntu 24.04 VM on the `apollo` Proxmox cluster (default IP `10.0.5.50`) and runs a `docker-compose` stack with:
+Provisions a single Ubuntu 24.04 VM on the `apollo` Proxmox cluster (IP via DHCP reservation; default expected `10.0.5.38`) and runs a `docker-compose` stack with:
 
 | Service | Port | Purpose |
 |---|---|---|
@@ -46,11 +46,11 @@ terraform-agent-hub/
 | Resource | Value |
 |---|---|
 | Hostname | `agent-hub` |
-| Static IP | `10.0.5.50/16` (next free slot above the `agent-1..4` fleet at `10.0.5.40..43`) |
-| Static MAC | `BC:24:11:10:05:50` (DHCP-reserved separately) |
+| Expected IP | `10.0.5.38/16` (assigned via DHCP reservation against `vm_mac_address`) |
+| Static MAC | `BC:24:11:10:05:38` (last byte matches IP for memorability; **reserve in DHCP BEFORE first apply**) |
 | DNS name | `agent-hub.litts.link` (resolved on the apollo network) |
 | vCPU / RAM | 2 / 4 GB |
-| Disk | 40 GB |
+| Disk | 60 GB |
 | OS | Ubuntu 24.04 |
 | SSH user | `dale` (passwordless sudo, SSH key-only) |
 

@@ -8,8 +8,8 @@ Operator-facing setup walkthrough. Pairs with `README.md`'s overview.
 |---|---|
 | **Proxmox API token** scoped to the `apollo` node | Proxmox UI → Datacenter → Permissions → API Tokens. Set as env var `PROXMOX_VE_API_TOKEN` (see `terraform-mattermost/README.md` § "Prerequisites" for the direnv + Keychain pattern). |
 | **Apollo node reachable** at `10.0.1.4` (default) | Tailscale or LAN connection to the apollo subnet. |
-| **DHCP reservation** for the chosen MAC + IP | Reserve `BC:24:11:10:05:50` → `10.0.5.50` (defaults) in your DHCP server BEFORE first apply. The VM otherwise won't get the static IP. |
-| **DNS record** for `agent-hub.litts.link` → `10.0.5.50` | Add to your local DNS or `/etc/hosts` for operator convenience. Optional — IP-only access works. |
+| **DHCP reservation** for the chosen MAC + IP | Reserve `BC:24:11:10:05:38` → `10.0.5.38` (defaults) in your DHCP server BEFORE first apply. The VM otherwise won't get the static IP. |
+| **DNS record** for `agent-hub.litts.link` → `10.0.5.38` | Add to your local DNS or `/etc/hosts` for operator convenience. Optional — IP-only access works. |
 | **`terraform-apollo` applied** (or Ubuntu image manually present) | The Ubuntu 24.04 cloud image must exist on the apollo node as `local:iso/ubuntu-24.04-server-cloudimg-amd64.img`. See `terraform-mattermost/main.tf` comment header for the manual download recipe. |
 | **Mattermost reachable + bot account provisioned** | `agent-hub`'s outbox-worker + inbox-webhook reuse the chat-emit service account from `setup-agent-comms`. If chat-emit isn't yet set up, do that first. |
 | **Terraform 1.6+ installed** locally | `brew install terraform`. |
@@ -40,7 +40,7 @@ After `apply` succeeds, `terraform output post_provision_checklist` prints the n
 Cloud-init wrote `/opt/agent-hub/.env` with placeholder `CHANGE_ME_FIRST_BOOT` values. Replace them before bringing the stack up:
 
 ```bash
-ssh dale@10.0.5.50
+ssh dale@10.0.5.38
 sudo nano /opt/agent-hub/.env
 ```
 
@@ -59,12 +59,12 @@ sudo docker compose up -d
 sudo docker compose ps
 ```
 
-Expected: 4 services healthy (`agent-hub-postgres`, `agent-hub-gateway`, `agent-hub-outbox`, `agent-hub-inbox-webhook`).
+Expected on v0.1.1: 2 services healthy (`agent-hub-postgres`, `agent-hub-gateway`). `agent-hub-outbox` + `agent-hub-inbox-webhook` are behind the `v0.1.1` compose profile and won't start by default — they ship in v0.1.2 (Component C). To bring them up later: `docker compose --profile v0.1.1 up -d`.
 
 Smoke test:
 
 ```bash
-curl -fsSL http://10.0.5.50:8787/health
+curl -fsSL http://10.0.5.38:8787/health
 # Expected: {"status":"ok","postgres":"ok"}
 ```
 
@@ -75,7 +75,7 @@ In Mattermost → Integrations → Outgoing Webhooks → Add:
 - **Content type:** `application/json`
 - **Trigger words:** leave empty (we trigger on channel membership, not word-match)
 - **Channel:** `agent-events` (create the channel first if needed)
-- **Callback URL:** `http://10.0.5.50:8788/v1/inbox/webhook`
+- **Callback URL:** `http://10.0.5.38:8788/v1/inbox/webhook`
 - **Token:** paste the value you set for `MATTERMOST_INBOX_WEBHOOK_SECRET` in Step 2
 
 ## Step 5 — From the operator Mac, run `/setup-agent-events`
@@ -84,7 +84,7 @@ In your consuming workspace (e.g., `~/projects/secureup/`), add to `.claude/conc
 
 ```yaml
 agent-events:
-  gateway-url: http://10.0.5.50:8787
+  gateway-url: http://10.0.5.38:8787
   vm-host: agent-hub
   per-vm-token-file: ~/.config/concept-workflow/agent-hub-token
   mattermost-outbox-channel: agent-events
@@ -106,7 +106,7 @@ agentctl health
 # Expected: gateway reachable, token valid, last_seen_at updates.
 
 # Verify all 5 peers registered:
-psql "postgres://agent_hub:<password>@10.0.5.50:54329/agent_hub" \
+psql "postgres://agent_hub:<password>@10.0.5.38:54329/agent_hub" \
   -c "select name, role, host_kind, last_seen_at from agents order by name;"
 ```
 
@@ -114,7 +114,7 @@ psql "postgres://agent_hub:<password>@10.0.5.50:54329/agent_hub" \
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `terraform apply` hangs at `proxmox_virtual_environment_vm.agent_hub_vm: Still creating...` | VM is booting + cloud-init is running. Wait ~3 min. | `ssh dale@10.0.5.50 'cloud-init status --wait'` to watch progress. |
+| `terraform apply` hangs at `proxmox_virtual_environment_vm.agent_hub_vm: Still creating...` | VM is booting + cloud-init is running. Wait ~3 min. | `ssh dale@10.0.5.38 'cloud-init status --wait'` to watch progress. |
 | Gateway returns `connection refused` after `docker compose up -d` | `.env` placeholder values still present | `cat /opt/agent-hub/.env` — make sure every `CHANGE_ME_FIRST_BOOT` is replaced. `docker compose down && docker compose up -d`. |
 | Outbox-worker logs `mattermost: unauthorized` | `MATTERMOST_TOKEN` invalid | Verify with `curl -fsSL -H "Authorization: Bearer $MATTERMOST_TOKEN" $MATTERMOST_URL/api/v4/users/me`. |
 | Inbox-webhook logs `invalid token` on incoming Mattermost posts | Webhook secret mismatch between Mattermost UI and `.env` | Re-paste the value in both places; they must match exactly. |

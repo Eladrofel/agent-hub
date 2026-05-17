@@ -68,8 +68,9 @@ variable "cloud_image_storage" {
 }
 
 # -----------------------------------------------------------------------------
-# Network — pick an IP outside the 10.0.5.40-43 range used by agent VMs.
-# Default 10.0.5.50 (next free slot above the agent fleet).
+# Network — IP via DHCP reservation (mapped to vm_mac_address). Default
+# vm_ip_address 10.0.5.38/16 (within the agent-fleet range; reserve this
+# MAC → IP mapping in your DHCP server BEFORE first apply).
 # -----------------------------------------------------------------------------
 
 variable "vm_bridge" {
@@ -79,21 +80,15 @@ variable "vm_bridge" {
 }
 
 variable "vm_ip_address" {
-  description = "Static IP in CIDR form (e.g., 10.0.5.50/16)"
+  description = "IP the DHCP server will assign to vm_mac_address (e.g., 10.0.5.38/16). Display-only — the VM itself gets its IP via DHCP; this variable is used only by outputs for operator-facing strings."
   type        = string
-  default     = "10.0.5.50/16"
-}
-
-variable "vm_gateway" {
-  description = "Network gateway"
-  type        = string
-  default     = "10.0.0.200"
+  default     = "10.0.5.38/16"
 }
 
 variable "vm_mac_address" {
-  description = "Static MAC (register in DHCP separately before first apply)"
+  description = "Static MAC for DHCP reservation. Reserve this MAC → vm_ip_address mapping on the DHCP server BEFORE first apply so the VM gets a predictable IP on boot. Last byte traditionally encodes the IP's last byte for memorability."
   type        = string
-  default     = "BC:24:11:10:05:50"
+  default     = "BC:24:11:10:05:38"
 }
 
 variable "vm_dns_servers" {
