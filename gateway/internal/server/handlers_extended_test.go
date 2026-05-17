@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/agents"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/inbox"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/sessions"
+	"github.com/Eladrofel/agent-hub/gateway/internal/agents"
+	"github.com/Eladrofel/agent-hub/gateway/internal/inbox"
+	"github.com/Eladrofel/agent-hub/gateway/internal/sessions"
 )
 
 // =============================================================================

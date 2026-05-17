@@ -37,7 +37,7 @@ resource "proxmox_virtual_environment_vm" "agent_hub_vm" {
   protection = true
 
   description = <<-EOT
-    Managed by Terraform (terraform-agent-hub).
+    Managed by Terraform (agent-hub).
     Postgres-backed agent-events ledger + Mattermost outbox/inbox.
     Serves the concept-workflow plugin's peer-agent fleet (4 VM agents +
     operator-Mac).

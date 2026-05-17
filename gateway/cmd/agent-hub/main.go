@@ -32,8 +32,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/server"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/store"
+	"github.com/Eladrofel/agent-hub/gateway/internal/server"
+	"github.com/Eladrofel/agent-hub/gateway/internal/store"
 )
 
 var (

@@ -1,4 +1,4 @@
-module github.com/Eladrofel/terraform-agent-hub/gateway
+module github.com/Eladrofel/agent-hub/gateway
 
 go 1.25.0
 

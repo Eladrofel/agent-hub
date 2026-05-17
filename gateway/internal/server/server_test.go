@@ -26,9 +26,9 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/auth"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/sanitiser"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/store"
+	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
+	"github.com/Eladrofel/agent-hub/gateway/internal/sanitiser"
+	"github.com/Eladrofel/agent-hub/gateway/internal/store"
 )
 
 // testEnv is the integration-test fixture. testApp wires the same middleware

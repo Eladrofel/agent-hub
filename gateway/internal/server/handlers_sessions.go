@@ -7,9 +7,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/auth"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/events"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/sessions"
+	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
+	"github.com/Eladrofel/agent-hub/gateway/internal/events"
+	"github.com/Eladrofel/agent-hub/gateway/internal/sessions"
 )
 
 // =============================================================================

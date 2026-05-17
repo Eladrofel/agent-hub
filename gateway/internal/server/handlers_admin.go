@@ -8,7 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/agents"
+	"github.com/Eladrofel/agent-hub/gateway/internal/agents"
 )
 
 // mintTokenResponse: the plaintext token is returned exactly once. The

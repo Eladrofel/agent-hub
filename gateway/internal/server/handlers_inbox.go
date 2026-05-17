@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/auth"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/inbox"
+	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
+	"github.com/Eladrofel/agent-hub/gateway/internal/inbox"
 )
 
 // handleInboxPoll returns the named agent's undelivered messages. Pre-v0.1.1

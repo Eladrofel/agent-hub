@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/db"
+	"github.com/Eladrofel/agent-hub/gateway/db"
 )
 
 // Migrations are embedded (see gateway/db/embed.go) so the binary is

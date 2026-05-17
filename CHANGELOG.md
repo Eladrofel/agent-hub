@@ -1,4 +1,4 @@
-# Changelog — terraform-agent-hub
+# Changelog — agent-hub
 
 All notable changes to this project are documented here.
 

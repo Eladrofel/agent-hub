@@ -6,8 +6,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/agents"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/auth"
+	"github.com/Eladrofel/agent-hub/gateway/internal/agents"
+	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
 )
 
 type agentRegisterRequest struct {

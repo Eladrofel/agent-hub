@@ -14,9 +14,9 @@ import (
 
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/auth"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/sanitiser"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/store"
+	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
+	"github.com/Eladrofel/agent-hub/gateway/internal/sanitiser"
+	"github.com/Eladrofel/agent-hub/gateway/internal/store"
 )
 
 // Config is the runtime configuration for the gateway. Fields map 1:1 to

@@ -9,8 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/auth"
-	"github.com/Eladrofel/terraform-agent-hub/gateway/internal/events"
+	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
+	"github.com/Eladrofel/agent-hub/gateway/internal/events"
 )
 
 // eventEmitRequest is the POST /v1/events body. Optional fields are

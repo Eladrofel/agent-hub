@@ -1,4 +1,4 @@
-# terraform-agent-hub
+# agent-hub
 
 Terraform module + service code for the **agent-events hub** — a Postgres-backed event ledger + Mattermost outbox/inbox that serves the `concept-workflow` plugin's peer-agent fleet (4 VM agents + the operator's Mac, today).
 
