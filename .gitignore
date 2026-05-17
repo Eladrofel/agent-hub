@@ -19,6 +19,9 @@ gateway/agentctl
 gateway/*.test
 gateway/cover.out
 
+# Cross-compiled agentctl binaries (Makefile target)
+bin/
+
 # Editor cruft
 .DS_Store
 .idea/
