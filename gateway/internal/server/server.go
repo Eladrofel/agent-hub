@@ -22,10 +22,12 @@ import (
 // Config is the runtime configuration for the gateway. Fields map 1:1 to
 // env vars consumed in cmd/agent-hub/main.go.
 type Config struct {
-	ListenAddr            string // LISTEN_ADDR, default :8787
-	DatabaseURL           string // DATABASE_URL
-	AdminToken            string // ADMIN_TOKEN
-	SanitiserPatternsFile string // SANITISER_PATTERNS_FILE
+	ListenAddr              string   // LISTEN_ADDR, default :8787
+	DatabaseURL             string   // DATABASE_URL
+	AdminToken              string   // ADMIN_TOKEN
+	SanitiserPatternsFile   string   // SANITISER_PATTERNS_FILE
+	SanitiserExemptHosts    []string // SANITISER_EXEMPT_HOSTS (comma-split)
+	MattermostDefaultOutbox string   // MATTERMOST_DEFAULT_OUTBOX_CHANNEL
 }
 
 // Run boots the gateway and blocks until ctx is cancelled. Migration is
@@ -44,19 +46,23 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	logger.Info("migrations applied")
 
-	san, err := sanitiser.Load(cfg.SanitiserPatternsFile)
+	san, err := sanitiser.Load(cfg.SanitiserPatternsFile, cfg.SanitiserExemptHosts)
 	if err != nil {
 		return fmt.Errorf("load sanitiser patterns: %w", err)
 	}
-	logger.Info("sanitiser loaded", "patterns", san.Count(), "file", cfg.SanitiserPatternsFile)
+	logger.Info("sanitiser loaded",
+		"patterns", san.Count(),
+		"exempt_hosts", len(cfg.SanitiserExemptHosts),
+		"file", cfg.SanitiserPatternsFile)
 
 	mw := &auth.Middleware{Pool: st.Pool, AdminToken: cfg.AdminToken}
 
 	app := &App{
-		Logger:    logger,
-		Store:     st,
-		Sanitiser: san,
-		Auth:      mw,
+		Logger:                 logger,
+		Store:                  st,
+		Sanitiser:              san,
+		Auth:                   mw,
+		MattermostDefaultOutbox: cfg.MattermostDefaultOutbox,
 	}
 
 	r := NewRouter(app, loggingMiddleware(logger))
@@ -92,10 +98,11 @@ func Run(ctx context.Context, cfg Config) error {
 // App carries the long-lived dependencies handlers need. Splitting this from
 // the chi-router wiring keeps handlers testable in isolation.
 type App struct {
-	Logger    *slog.Logger
-	Store     *store.Store
-	Sanitiser *sanitiser.Sanitiser
-	Auth      *auth.Middleware
+	Logger                  *slog.Logger
+	Store                   *store.Store
+	Sanitiser               *sanitiser.Sanitiser
+	Auth                    *auth.Middleware
+	MattermostDefaultOutbox string // fallback channel for curated events
 }
 
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {

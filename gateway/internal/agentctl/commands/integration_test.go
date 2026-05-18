@@ -91,7 +91,7 @@ func newIntEnv(t *testing.T) *intEnv {
 	if err := os.WriteFile(patternsFile, []byte(""), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	san, err := sanitiser.Load(patternsFile)
+	san, err := sanitiser.Load(patternsFile, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestIntegration_BestEffortOnSanitiserBlock(t *testing.T) {
 
 	patternsFile := filepath.Join(t.TempDir(), "patterns.txt")
 	_ = os.WriteFile(patternsFile, []byte("forbidden\n"), 0o600)
-	san, _ := sanitiser.Load(patternsFile)
+	san, _ := sanitiser.Load(patternsFile, nil)
 
 	mw := &auth.Middleware{Pool: st.Pool, AdminToken: "x"}
 	app := &server.App{

@@ -70,7 +70,7 @@ func newTestEnv(t *testing.T, patternsBody string) *testEnv {
 	if err := os.WriteFile(patternsFile, []byte(patternsBody), 0o600); err != nil {
 		t.Fatalf("write patterns: %v", err)
 	}
-	san, err := sanitiser.Load(patternsFile)
+	san, err := sanitiser.Load(patternsFile, nil)
 	if err != nil {
 		t.Fatalf("load patterns: %v", err)
 	}
@@ -340,6 +340,101 @@ func TestEventEmit_RejectsUnknownTaskKey(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Error != "unknown_reference" {
 		t.Fatalf("error = %q, want 'unknown_reference'", resp.Error)
+	}
+}
+
+// =============================================================================
+// v0.1.3 Component C — curated event types trigger outbox writes
+// =============================================================================
+
+func TestEventEmit_CuratedType_WritesOutboxRow(t *testing.T) {
+	env := newTestEnv(t, "")
+	env.app.MattermostDefaultOutbox = "agent-events"
+
+	w := env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type": "task.created",
+		"summary":    "feat-04 ready for claim",
+		"payload":    map[string]any{"task_key": "feat-04-x"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+	var resp eventEmitResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+
+	// Curated → events row AND outbox row exist.
+	var (
+		evCount     int
+		outboxCount int
+		outboxCh    string
+		outboxMsg   string
+	)
+	_ = env.store.Pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM events WHERE id = $1`, resp.EventID).Scan(&evCount)
+	if evCount != 1 {
+		t.Fatalf("events row count = %d, want 1", evCount)
+	}
+	err := env.store.Pool.QueryRow(env.ctx,
+		`SELECT count(*), max(channel_id), max(message)
+		   FROM mattermost_outbox WHERE event_id = $1`, resp.EventID,
+	).Scan(&outboxCount, &outboxCh, &outboxMsg)
+	if err != nil {
+		t.Fatalf("scan outbox: %v", err)
+	}
+	if outboxCount != 1 {
+		t.Fatalf("outbox row count = %d, want 1 for curated event", outboxCount)
+	}
+	if outboxCh != "agent-events" {
+		t.Fatalf("outbox channel = %q, want 'agent-events'", outboxCh)
+	}
+	if outboxMsg == "" {
+		t.Fatal("outbox message empty")
+	}
+}
+
+func TestEventEmit_NonCuratedType_NoOutboxRow(t *testing.T) {
+	env := newTestEnv(t, "")
+	env.app.MattermostDefaultOutbox = "agent-events"
+
+	w := env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type": "progress.updated", // NOT in CuratedEventTypes
+		"summary":    "noisy progress ping",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	var resp eventEmitResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+
+	var outboxCount int
+	_ = env.store.Pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM mattermost_outbox WHERE event_id = $1`, resp.EventID,
+	).Scan(&outboxCount)
+	if outboxCount != 0 {
+		t.Fatalf("outbox row count = %d, want 0 for non-curated event", outboxCount)
+	}
+}
+
+func TestEventEmit_CuratedType_NoDefaultChannelSkipsOutbox(t *testing.T) {
+	env := newTestEnv(t, "")
+	env.app.MattermostDefaultOutbox = "" // operator hasn't configured default
+
+	w := env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type": "task.completed",
+		"summary":    "no channel configured",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	var resp eventEmitResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+
+	var outboxCount int
+	_ = env.store.Pool.QueryRow(env.ctx,
+		`SELECT count(*) FROM mattermost_outbox WHERE event_id = $1`, resp.EventID,
+	).Scan(&outboxCount)
+	if outboxCount != 0 {
+		t.Fatalf("outbox row count = %d, want 0 when no channel resolves", outboxCount)
 	}
 }
 

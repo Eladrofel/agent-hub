@@ -32,6 +32,10 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-agent_hub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_hub}?sslmode=disable
       LISTEN_ADDR: ":8787"
       SANITISER_PATTERNS_FILE: /etc/agent-hub/sanitiser-patterns.txt
+      # Exempt the operator's own gateway host from the §2.1 10.x leak
+      # pattern (v0.1.3 task #29). Override per deployment.
+      SANITISER_EXEMPT_HOSTS: ${SANITISER_EXEMPT_HOSTS:-10.0.5.38}
+      MATTERMOST_DEFAULT_OUTBOX_CHANNEL: ${MATTERMOST_DEFAULT_OUTBOX_CHANNEL:-agent-events}
       ADMIN_TOKEN: ${ADMIN_TOKEN:?ADMIN_TOKEN required in .env}
     ports:
       - "8787:8787"
@@ -46,12 +50,10 @@ services:
       timeout: 5s
       retries: 5
 
-  # outbox-worker and inbox-webhook ship in v0.1.1 alongside ROADMAP #10
-  # Component C. v0.1.0 implements `agent-hub serve` only; these stubs would
-  # crash-loop, so they're behind the `v0.1.1` compose profile (start them
-  # explicitly with `docker compose --profile v0.1.1 up -d` once they're real).
+  # outbox-worker + inbox-webhook now ship real implementations as of v0.1.3
+  # (ROADMAP #10 Component C — Mattermost bidirectional). No compose profile;
+  # they come up by default with the rest of the stack.
   outbox-worker:
-    profiles: ["v0.1.1"]
     build: ./gateway
     image: agent-hub-gateway:latest
     container_name: agent-hub-outbox
@@ -61,6 +63,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-agent_hub}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-agent_hub}?sslmode=disable
       MATTERMOST_URL: ${MATTERMOST_URL:?MATTERMOST_URL required in .env}
       MATTERMOST_TOKEN: ${MATTERMOST_TOKEN:?MATTERMOST_TOKEN required in .env}
+      MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME:?MATTERMOST_TEAM_NAME required in .env (v0.1.3+)}
       POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-5}
     depends_on:
       postgres:
@@ -69,7 +72,6 @@ services:
         condition: service_healthy
 
   inbox-webhook:
-    profiles: ["v0.1.1"]
     build: ./gateway
     image: agent-hub-gateway:latest
     container_name: agent-hub-inbox-webhook

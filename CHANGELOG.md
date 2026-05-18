@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.3] — 2026-05-18
+
+ROADMAP `#10` Component C — Mattermost bidirectional. Curated agent events now flow to a Mattermost channel via the outbox-worker, and operator @-mentions in that channel flow back to per-agent inboxes via the inbox-webhook. Also fixes task `#29` (sanitiser self-block on the operator's own gateway URL).
+
+### Added — curated event types + transactional outbox-write (gateway)
+
+- **`events.CuratedEventTypes`** — explicit set of 11 event types that mirror to Mattermost: `task.{created,claimed,blocked,unblocked,completed}`, `decision.{proposed,accepted,rejected}`, `handoff.created`, `session.ended`, `sanitiser.blocked`. Non-curated events skip the outbox (no chat noise).
+- **`events.InsertWithOutbox(ctx, pool, params, OutboxConfig, message)`** — single transaction inserts the events row and, when curated, the mattermost_outbox row. Outbox-write failure rolls back the whole event — no orphan ledger entries, no orphan outbox rows. Used by `POST /v1/events`, the sanitiser audit event, and lifecycle session emissions.
+- **Channel resolution priority**: per-project `projects.mattermost_outbox_channel` (when set) → `MATTERMOST_DEFAULT_OUTBOX_CHANNEL` env (default `agent-events`). Empty resolved channel = no outbox row (logged warn, event still writes).
+- **`internal/outbox/outbox.go`** new package with `InsertPending(ctx, tx, params)` so the events handler and the worker share one source of truth for the outbox row shape.
+
+### Added — `agent-hub outbox-worker` (real impl)
+
+- **Drains `mattermost_outbox`** on a ticker (`POLL_INTERVAL_SECONDS`, default 5s). For each pending row: resolves channel-name → channel-id (cached in-process, hits `/api/v4/teams/name/{team}/channels/name/{channel}`), then POSTs `/api/v4/posts` with `Authorization: Bearer <PAT>` and a `props.idempotency_key = "{event_id}_{attempt}"`.
+- **Per-row HTTP-class handling**: 2xx → `status='sent', sent_at=now()`; 4xx → `status='failed'` (non-retryable); 5xx/network → `attempts++`, row stays pending; at `attempts >= MaxAttempts` (5) the row is forced to `failed` so the queue can't grow behind a poisoned message.
+- **Graceful shutdown** via `signal.NotifyContext` — in-flight POST completes before exit; the loop respects `ctx.Done()`.
+- **New env vars**: `MATTERMOST_TEAM_NAME` (required, for channel-name resolution), `MATTERMOST_DEFAULT_OUTBOX_CHANNEL` (used by gateway, not worker).
+
+### Added — `agent-hub inbox-webhook` (real impl)
+
+- **HTTP server** on `:8788` (`LISTEN_ADDR`). Exposes `GET /health` (no-auth, `{"status":"ok"}`) and `POST /v1/inbox/webhook` (Mattermost outgoing-webhook receiver).
+- **Token validation**: constant-time compare of the inbound `token` field against `WEBHOOK_SECRET`. Mismatch → 401 with empty body (no echo).
+- **Content-type adaptive**: handles both `application/x-www-form-urlencoded` (Mattermost default) and `application/json` (when the operator configures the webhook for JSON).
+- **@-mention parsing**: regex `@([A-Za-z0-9][A-Za-z0-9._-]*)` over the message body. For each handle: try `agents.name` exact match; fall back to `agents.mattermost_username` so `@Splinter` resolves to `agent-operator-mac`. Unresolved handles are logged-warn + skipped silently.
+- **Idempotent insert**: one `mattermost_inbox` row per resolved agent, `ON CONFLICT (source_post_id, target_agent_id) DO NOTHING` so Mattermost's at-least-once outgoing-webhook delivery doesn't double-insert. Migration `002_mattermost_inbox_unique.sql` creates the supporting partial unique index.
+
+### Added — schema migration
+
+- **`002_mattermost_inbox_unique.sql`** — partial `UNIQUE (source_post_id, target_agent_id) WHERE source_post_id IS NOT NULL` for inbox-webhook idempotency. Applied by the embedded migration runner on boot.
+
+### Fixed — sanitiser self-block (task `#29`)
+
+- **`SANITISER_EXEMPT_HOSTS`** comma-separated env var (default `10.0.5.38`). When a §2.1 regex matches a substring containing any exempt host, the match is suppressed and scanning continues. Prevents the gateway's permissive `\b10\.\d+\.\d+\.\d+\b` private-range rule from blocking its own URL when it legitimately appears in event payloads (e.g., `AGENT_HUB_URL` in session-start metadata).
+- API change: **`sanitiser.Load(path, exemptHosts []string)`** — the exempt list is supplied at load time so per-Check call sites stay unchanged. Empty/whitespace exempt entries are ignored so an unset env var doesn't accidentally exempt everything.
+
+### Changed
+
+- **docker-compose.yml**: `outbox-worker` + `inbox-webhook` services no longer behind the `v0.1.1` compose profile — they now ship real implementations and come up by default with the rest of the stack. `MATTERMOST_TEAM_NAME` added to the outbox-worker env; `SANITISER_EXEMPT_HOSTS` + `MATTERMOST_DEFAULT_OUTBOX_CHANNEL` added to the gateway env.
+- **`.env.example`**: documents the three new vars (`MATTERMOST_TEAM_NAME`, `MATTERMOST_DEFAULT_OUTBOX_CHANNEL`, `SANITISER_EXEMPT_HOSTS`).
+- **Binary versions**: `agent-hub` `0.1.2` → `0.1.3`; `agentctl` `0.1.2` → `0.1.3`. `Makefile` `VERSION ?= 0.1.2` → `0.1.3`.
+
+### Tests
+
+- **8 new sanitiser unit tests** in `internal/sanitiser/sanitiser_test.go` (exempt-host suppression, mixed-exempt-and-non-exempt, empty-entries-ignored, plus the existing five updated to the new `Load(path, exempt)` signature).
+- **8 new outbox-worker integration tests** in `internal/outbox/worker_test.go` — happy path (post body shape + idempotency_key), 4xx → failed, 5xx → attempts-bump → failed at ceiling, channel-lookup failure → failed, empty-queue noop, channel-cache, id-passthrough, config validation. All use httptest-mocked Mattermost, no live MM dependency.
+- **8 new inbox-webhook integration tests** in `internal/inbox/webhook_test.go` — bad token 401, non-POST 405, /health, form-post happy path, JSON post path, mattermost_username resolution (@Splinter), unknown-mention skip, multiple mentions, redelivery idempotency.
+
+### Plugin coupling
+
+`concept-workflow` plugin **v0.2.12+** ships the matching `/agent-inbox` operator skill and the Phase 4 Mattermost setup (outgoing-webhook provisioning + agent-aliases populated). Plugin v0.2.11 and earlier continue to work; this release is strictly additive — curated events queue regardless of whether the worker is up, and the worker drains as soon as it starts.
+
 ## [0.1.2] — 2026-05-18
 
 Projects API + agent-alias plumbing. Unblocks `concept-workflow` plugin **v0.2.11**'s multi-project event scoping and named agents (Splinter / Mikey / Donnie) posting under per-agent Mattermost handles. Without these, `/setup-agent-events` had to provision the `projects` row via direct SQL, and the plugin couldn't surface agent aliases in Mattermost.

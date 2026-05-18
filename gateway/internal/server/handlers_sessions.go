@@ -246,15 +246,19 @@ func (a *App) handleSessionResumeContext(w http.ResponseWriter, r *http.Request)
 // emitLifecycleEvent writes one event with the lifecycle-emit posture:
 // best-effort; failures logged but don't fail the calling handler.
 // Used by session.started / session.checkpointed / session.ended emissions.
+// Curated event_types (e.g., session.ended) also enqueue a mattermost_outbox
+// row in the same transaction; non-curated types are a single insert.
 func (a *App) emitLifecycleEvent(r *http.Request, agentID, eventType, sessionID, claudeSessionID, summary string, payload map[string]any) {
-	_, err := events.Insert(r.Context(), a.Store.Pool, events.InsertParams{
+	_, err := events.InsertWithOutbox(r.Context(), a.Store.Pool, events.InsertParams{
 		EventType:       eventType,
 		AgentID:         agentID,
 		AgentSessionID:  &sessionID,
 		ClaudeSessionID: stringPtr(claudeSessionID),
 		Summary:         stringPtr(summary),
 		Payload:         payload,
-	})
+	}, events.OutboxConfig{
+		DefaultChannel: a.MattermostDefaultOutbox,
+	}, "")
 	if err != nil {
 		a.Logger.Warn("lifecycle event emission failed",
 			"event_type", eventType, "claude_session_id", claudeSessionID, "err", err)

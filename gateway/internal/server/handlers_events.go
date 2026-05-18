@@ -115,7 +115,26 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 		ArtefactPointer: req.ArtefactPointer,
 	}
 
-	id, err := events.Insert(r.Context(), a.Store.Pool, params)
+	// Resolve the per-project Mattermost outbox channel (may be empty —
+	// caller falls back to the operator-level default in that case).
+	projectChannel := ""
+	if projectID != nil {
+		pc, perr := events.ResolveProjectChannel(r.Context(), a.Store.Pool, projectID)
+		if perr != nil {
+			a.Logger.Warn("resolve project outbox channel failed; falling back to default",
+				"project_id", *projectID, "err", perr)
+		} else {
+			projectChannel = pc
+		}
+	}
+
+	id, err := events.InsertWithOutbox(r.Context(), a.Store.Pool, params,
+		events.OutboxConfig{
+			ProjectChannel: projectChannel,
+			DefaultChannel: a.MattermostDefaultOutbox,
+		},
+		"", // let events.InsertWithOutbox compose a default message
+	)
 	if err != nil {
 		a.Logger.Error("insert event failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "insert_failed", err.Error())
@@ -127,9 +146,10 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 
 // writeSanitiserBlocked writes the metadata-only audit event. Returns the
 // new event ID, or "" on failure (the operator-facing 422 still goes out;
-// we just couldn't audit it).
+// we just couldn't audit it). sanitiser.blocked is curated → flows to the
+// outbox so the operator sees the §2.1 hit in Mattermost too.
 func (a *App) writeSanitiserBlocked(ctx context.Context, agentID, blockedType, pattern, field string) string {
-	id, err := events.Insert(ctx, a.Store.Pool, events.InsertParams{
+	id, err := events.InsertWithOutbox(ctx, a.Store.Pool, events.InsertParams{
 		EventType: "sanitiser.blocked",
 		AgentID:   agentID,
 		Summary:   stringPtr("event blocked by §2.1 sanitiser; original event_type=" + blockedType),
@@ -138,7 +158,9 @@ func (a *App) writeSanitiserBlocked(ctx context.Context, agentID, blockedType, p
 			"matched_field":   field,
 			"blocked_type":    blockedType,
 		},
-	})
+	}, events.OutboxConfig{
+		DefaultChannel: a.MattermostDefaultOutbox,
+	}, "sanitiser blocked event (type="+blockedType+", pattern="+pattern+", field="+field+")")
 	if err != nil {
 		a.Logger.Error("failed to write sanitiser.blocked audit event", "err", err)
 		return ""
