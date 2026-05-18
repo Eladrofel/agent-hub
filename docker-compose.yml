@@ -64,6 +64,9 @@ services:
       MATTERMOST_URL: ${MATTERMOST_URL:?MATTERMOST_URL required in .env}
       MATTERMOST_TOKEN: ${MATTERMOST_TOKEN:?MATTERMOST_TOKEN required in .env}
       MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME:?MATTERMOST_TEAM_NAME required in .env (v0.1.3+)}
+      # MATTERMOST_TLS_SKIP_VERIFY=true for homelab self-signed certs (v0.1.4+).
+      # Default empty/false enforces full cert validation.
+      MATTERMOST_TLS_SKIP_VERIFY: ${MATTERMOST_TLS_SKIP_VERIFY:-false}
       POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-5}
     depends_on:
       postgres:

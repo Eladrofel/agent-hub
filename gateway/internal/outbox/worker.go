@@ -20,6 +20,7 @@ package outbox
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +47,7 @@ type WorkerConfig struct {
 	MattermostURL        string        // MATTERMOST_URL (e.g., https://mm.example)
 	MattermostToken      string        // MATTERMOST_TOKEN (service-account PAT)
 	MattermostTeamName   string        // MATTERMOST_TEAM_NAME (for channel-name resolution)
+	MattermostTLSSkipVerify bool       // MATTERMOST_TLS_SKIP_VERIFY (homelab / self-signed cert)
 	PollInterval         time.Duration // POLL_INTERVAL_SECONDS
 	MaxAttempts          int           // hard ceiling before a row is failed
 	BatchSize            int           // rows to SELECT per poll
@@ -56,13 +59,25 @@ type WorkerConfig struct {
 // production defaults filled in. Caller wires this into cmd/agent-hub.
 func DefaultWorkerConfig() WorkerConfig {
 	return WorkerConfig{
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		MattermostURL:      os.Getenv("MATTERMOST_URL"),
-		MattermostToken:    os.Getenv("MATTERMOST_TOKEN"),
-		MattermostTeamName: os.Getenv("MATTERMOST_TEAM_NAME"),
-		PollInterval:       envDuration("POLL_INTERVAL_SECONDS", 5*time.Second),
-		MaxAttempts:        5,
-		BatchSize:          20,
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		MattermostURL:           os.Getenv("MATTERMOST_URL"),
+		MattermostToken:         os.Getenv("MATTERMOST_TOKEN"),
+		MattermostTeamName:      os.Getenv("MATTERMOST_TEAM_NAME"),
+		MattermostTLSSkipVerify: envBool("MATTERMOST_TLS_SKIP_VERIFY"),
+		PollInterval:            envDuration("POLL_INTERVAL_SECONDS", 5*time.Second),
+		MaxAttempts:             5,
+		BatchSize:               20,
+	}
+}
+
+// envBool reads a boolean env var. Accepts "true"/"1"/"yes" (case-insensitive)
+// as true; anything else (including unset) is false.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "true", "1", "yes":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -138,7 +153,10 @@ type Worker struct {
 func NewWorker(pool *pgxpool.Pool, cfg WorkerConfig, logger *slog.Logger) *Worker {
 	hc := cfg.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 15 * time.Second}
+		transport := &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.MattermostTLSSkipVerify},
+		}
+		hc = &http.Client{Timeout: 15 * time.Second, Transport: transport}
 	}
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))

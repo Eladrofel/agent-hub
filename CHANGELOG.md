@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.4] — 2026-05-18
+
+Hotfix: outbox-worker TLS-cert validation for homelab Mattermost.
+
+### Fixed
+
+- **`MATTERMOST_TLS_SKIP_VERIFY` env var** (default `false`) lets the outbox-worker bypass TLS certificate validation when posting to Mattermost. Required for homelab deployments where Mattermost runs behind a self-signed or internal-CA-signed cert. Without this, v0.1.3's outbox-worker failed every Mattermost POST with `tls: failed to verify certificate: x509: certificate signed by unknown authority` (all outbox rows stuck `status=failed` after one attempt). Symmetric to the `curl -sk` pattern the operator already uses against the same Mattermost instance.
+- `docker-compose.yml` exposes the new env to outbox-worker with default `false` so proper-cert deployments are unaffected.
+
+### Operator action required when upgrading from v0.1.3
+
+If your Mattermost cert isn't trusted by the container's default CA bundle:
+1. Add `MATTERMOST_TLS_SKIP_VERIFY=true` to `/opt/agent-hub/.env`.
+2. Reset any already-failed outbox rows back to pending so they retry: `UPDATE mattermost_outbox SET status='pending', attempts=0, last_error=NULL WHERE status='failed' AND last_error LIKE '%certificate%';`
+3. `docker compose up -d --build outbox-worker` to pick up the new env.
+
 ## [0.1.3] — 2026-05-18
 
 ROADMAP `#10` Component C — Mattermost bidirectional. Curated agent events now flow to a Mattermost channel via the outbox-worker, and operator @-mentions in that channel flow back to per-agent inboxes via the inbox-webhook. Also fixes task `#29` (sanitiser self-block on the operator's own gateway URL).
