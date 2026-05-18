@@ -142,6 +142,26 @@ func TestRegisterAgent_BuildsCorrectRequest(t *testing.T) {
 	}
 }
 
+func TestRegisterAgent_SerializesMattermostUsername(t *testing.T) {
+	// v0.1.2 completion: the --mattermost-username flag must reach the
+	// gateway as `mattermost_username` so agent aliases (Splinter / Mikey /
+	// Donnie) post under the right MM handle.
+	f := newFixture(t)
+	f.responseStatus = 200
+	f.responseBody = `{"id":"abc","name":"agent-test"}`
+
+	err := f.run(NewRegisterAgentCmd(),
+		"--mattermost-username", "splinter",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.gotBody["mattermost_username"] != "splinter" {
+		t.Fatalf("mattermost_username = %v, want 'splinter'; raw body: %s",
+			f.gotBody["mattermost_username"], f.gotRawBody)
+	}
+}
+
 func TestRegisterAgent_RejectsNameMismatch(t *testing.T) {
 	f := newFixture(t)
 	err := f.run(NewRegisterAgentCmd(), "--name", "other-agent")
@@ -598,6 +618,142 @@ func TestAudit_LogIsWrittenOnSuccess(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"outcome":"ok"`) {
 		t.Fatalf("audit log missing ok outcome: %q", string(raw))
+	}
+}
+
+// =============================================================================
+// project register
+// =============================================================================
+
+func TestProjectRegister_BuildsCorrectRequest(t *testing.T) {
+	f := newFixture(t)
+	f.responseStatus = 200
+	f.responseBody = `{"id":"proj-uuid-abcdefgh","slug":"secureup","name":"Secureup"}`
+
+	err := f.runNested(NewProjectCmd(), "register",
+		"--slug", "secureup",
+		"--name", "Secureup",
+		"--forge-url", "ssh://git@forge:2222/x/workspace.git",
+		"--default-branch", "develop",
+		"--mattermost-outbox-channel", "agent-events",
+		"--mattermost-inbox-channel", "agent-inbox",
+	)
+	if err != nil {
+		t.Fatalf("run: %v stderr=%q", err, f.stderr.String())
+	}
+	if f.gotMethod != "POST" || f.gotPath != "/v1/projects" {
+		t.Fatalf("method/path = %s %s", f.gotMethod, f.gotPath)
+	}
+	if f.gotBody["slug"] != "secureup" {
+		t.Fatalf("slug = %v", f.gotBody["slug"])
+	}
+	if f.gotBody["name"] != "Secureup" {
+		t.Fatalf("name = %v", f.gotBody["name"])
+	}
+	if f.gotBody["forge_url"] != "ssh://git@forge:2222/x/workspace.git" {
+		t.Fatalf("forge_url = %v", f.gotBody["forge_url"])
+	}
+	if f.gotBody["default_branch"] != "develop" {
+		t.Fatalf("default_branch = %v", f.gotBody["default_branch"])
+	}
+	if f.gotBody["mattermost_outbox_channel"] != "agent-events" {
+		t.Fatalf("outbox = %v", f.gotBody["mattermost_outbox_channel"])
+	}
+	if f.gotBody["mattermost_inbox_channel"] != "agent-inbox" {
+		t.Fatalf("inbox = %v", f.gotBody["mattermost_inbox_channel"])
+	}
+	// Summary on stderr with short id.
+	if !strings.Contains(f.stderr.String(), "project register: project secureup registered (id=proj-uui...)") {
+		t.Fatalf("stderr summary missing or wrong: %q", f.stderr.String())
+	}
+}
+
+func TestProjectRegister_OnlyRequiredFields(t *testing.T) {
+	f := newFixture(t)
+	f.responseStatus = 200
+	f.responseBody = `{"id":"x","slug":"min","name":"Min"}`
+
+	err := f.runNested(NewProjectCmd(), "register",
+		"--slug", "min",
+		"--name", "Min",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Optional fields must NOT be present in the body when unset.
+	for _, key := range []string{"forge_url", "default_branch", "mattermost_outbox_channel", "mattermost_inbox_channel"} {
+		if _, ok := f.gotBody[key]; ok {
+			t.Errorf("body should omit %s when flag unset; raw=%s", key, f.gotRawBody)
+		}
+	}
+}
+
+func TestProjectRegister_RequiresSlug(t *testing.T) {
+	f := newFixture(t)
+	err := f.runNested(NewProjectCmd(), "register", "--name", "X")
+	if err != nil {
+		t.Fatalf("best-effort: should exit 0 with stderr, got %v", err)
+	}
+	if !strings.Contains(f.stderr.String(), "--slug is required") {
+		t.Fatalf("stderr should explain the missing slug: %q", f.stderr.String())
+	}
+	if !strings.Contains(f.stderr.String(), "continuing (best-effort)") {
+		t.Fatalf("stderr should mark posture: %q", f.stderr.String())
+	}
+}
+
+func TestProjectRegister_RequiresName(t *testing.T) {
+	f := newFixture(t)
+	err := f.runNested(NewProjectCmd(), "register", "--slug", "x")
+	if err != nil {
+		t.Fatalf("best-effort: should exit 0 with stderr, got %v", err)
+	}
+	if !strings.Contains(f.stderr.String(), "--name is required") {
+		t.Fatalf("stderr: %q", f.stderr.String())
+	}
+}
+
+func TestProjectRegister_StrictPropagatesValidationError(t *testing.T) {
+	f := newFixture(t)
+	err := f.runNested(NewProjectCmd(), "register", "--strict", "--name", "X")
+	if err == nil {
+		t.Fatal("strict mode: missing --slug should propagate")
+	}
+	if !strings.Contains(f.stderr.String(), "halting (--strict)") {
+		t.Fatalf("stderr: %q", f.stderr.String())
+	}
+}
+
+func TestProjectRegister_BestEffortOnNetworkError(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv(config.EnvURL, "http://127.0.0.1:1")
+	err := f.runNested(NewProjectCmd(), "register",
+		"--slug", "x",
+		"--name", "X",
+	)
+	if err != nil {
+		t.Fatalf("best-effort: err should be nil, got %v", err)
+	}
+	if !strings.Contains(f.stderr.String(), "continuing (best-effort)") {
+		t.Fatalf("stderr: %q", f.stderr.String())
+	}
+}
+
+func TestProjectRegister_JSONFlagWritesToStdout(t *testing.T) {
+	f := newFixture(t)
+	f.responseStatus = 200
+	f.responseBody = `{"id":"p1","slug":"x","name":"X"}`
+
+	err := f.runNested(NewProjectCmd(), "register",
+		"--slug", "x",
+		"--name", "X",
+		"--json",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(f.stdout.String(), `"slug":"x"`) {
+		t.Fatalf("stdout should carry response body: %q", f.stdout.String())
 	}
 }
 

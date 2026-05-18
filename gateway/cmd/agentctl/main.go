@@ -41,7 +41,7 @@ import (
 var (
 	// agentctl wire-up to the gateway endpoints ships in v0.1.0; the binary
 	// version tracks the agent-hub release line.
-	version = "0.1.0-dev"
+	version = "0.1.2"
 	commit  = "unknown"
 )
 
@@ -66,6 +66,7 @@ func main() {
 	root.AddCommand(commands.NewResumeContextCmd())
 	root.AddCommand(commands.NewInboxCmd())
 	root.AddCommand(commands.NewHealthCmd())
+	root.AddCommand(commands.NewProjectCmd())
 
 	if err := root.Execute(); err != nil {
 		// Silent errors are the best-effort marker; treat as success.

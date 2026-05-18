@@ -260,6 +260,47 @@ func TestIntegration_InboxPoll(t *testing.T) {
 	_ = env
 }
 
+func TestIntegration_ProjectRegister(t *testing.T) {
+	env := newIntEnv(t)
+	f := newCapFixture(t)
+	err := f.runNested(NewProjectCmd(), "register",
+		"--slug", "new-proj",
+		"--name", "New Project",
+		"--default-branch", "main",
+	)
+	if err != nil {
+		t.Fatalf("project register: %v stderr=%s", err, f.stderr.String())
+	}
+	// Verify the row landed.
+	var name string
+	err = env.store.Pool.QueryRow(context.Background(),
+		`SELECT name FROM projects WHERE slug = $1`, "new-proj").Scan(&name)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if name != "New Project" {
+		t.Fatalf("name = %q", name)
+	}
+
+	// Re-register with updated name — must be idempotent.
+	f2 := newCapFixture(t)
+	err = f2.runNested(NewProjectCmd(), "register",
+		"--slug", "new-proj",
+		"--name", "Renamed Project",
+	)
+	if err != nil {
+		t.Fatalf("re-register: %v stderr=%s", err, f2.stderr.String())
+	}
+	err = env.store.Pool.QueryRow(context.Background(),
+		`SELECT name FROM projects WHERE slug = $1`, "new-proj").Scan(&name)
+	if err != nil {
+		t.Fatalf("re-select: %v", err)
+	}
+	if name != "Renamed Project" {
+		t.Fatalf("name not updated: %q", name)
+	}
+}
+
 func TestIntegration_BestEffortOnSanitiserBlock(t *testing.T) {
 	// Override sanitiser with a real pattern. We need to bring up a fresh
 	// env so the patterns file has content.

@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.2] — 2026-05-18
+
+Projects API + agent-alias plumbing. Unblocks `concept-workflow` plugin **v0.2.11**'s multi-project event scoping and named agents (Splinter / Mikey / Donnie) posting under per-agent Mattermost handles. Without these, `/setup-agent-events` had to provision the `projects` row via direct SQL, and the plugin couldn't surface agent aliases in Mattermost.
+
+### Added — gateway endpoints
+
+- **`POST /v1/projects`** — idempotent upsert keyed by slug. Body: `{slug, name, forge_url?, default_branch?, mattermost_outbox_channel?, mattermost_inbox_channel?}`. On slug conflict, updates the name + optional fields (via COALESCE so nil values don't clobber existing rows) and returns the existing id. Auth: per-host agent token (`RequireAgent`).
+- **`GET /v1/projects`** — list every project ordered by slug. Returns `{"projects": [...]}`. Used by the plugin's `/agent-events-health` diagnostic.
+- **`GET /v1/projects/{slug}`** — single fetch; 404 with `project_not_found` if missing.
+
+### Added — `agentctl` subcommands + flags
+
+- **`agentctl project register --slug <slug> --name <name> [--forge-url …] [--default-branch …] [--mattermost-outbox-channel …] [--mattermost-inbox-channel …]`** — wraps `POST /v1/projects`. Best-effort posture per repo convention (audit + stderr + exit 0 on failure; `--strict` for exit 1). `--json` emits the full response body on stdout; default emits a one-line summary on stderr (`project register: project <slug> registered (id=<short>)`).
+- **`agentctl register-agent --mattermost-username <handle>`** — flag was already wired through to the request body but lacked test coverage and CLI-side documentation. Test `TestRegisterAgent_SerializesMattermostUsername` now pins the serialisation behaviour so agent aliases (Splinter / Mikey / Donnie) reach the gateway.
+
+### Changed
+
+- **Binary versions:** `agent-hub` bumped `0.1.0` → `0.1.2`; `agentctl` bumped `0.1.0-dev` → `0.1.2` (the two binaries now ship in lockstep). `Makefile` `VERSION ?= 0.1.0-dev` → `0.1.2`.
+
+### Tests
+
+- **8 new unit tests** in `internal/server/handlers_projects_test.go` (project upsert / list / get happy-paths + idempotent-upsert + missing-auth/slug/name 4xxs + 404 on missing).
+- **6 new unit tests** in `internal/agentctl/commands/commands_test.go` for `project register` (correct request shape, required-fields validation, best-effort vs strict posture, --json output, network-error best-effort).
+- **1 new test** pinning `register-agent --mattermost-username` serialisation.
+- **1 new integration test** (`TestIntegration_ProjectRegister`) exercising the upsert path end-to-end against the live gateway + verifying idempotency.
+
+### Plugin coupling
+
+`concept-workflow` plugin **v0.2.11+** consumes the projects API for `/setup-agent-events` provisioning and the `mattermost_username` plumbing for the Splinter / Mikey / Donnie agent aliases. Plugin v0.2.10 and earlier continue to work; this release is strictly additive.
+
 ## [0.1.1] — 2026-05-17
 
 `agentctl` client implementation. Closes the v0.1.0 known-limitation "agentctl subcommands are still stubbed" — Component B's plugin hooks (session-start, post-tool-use, pre-compact, stop, session-end on plugin v0.2.9) now reach real handlers via this binary.
