@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.5] — 2026-05-18
+
+Hotfix: inbox-webhook payload-parse failure on Mattermost's outgoing webhook.
+
+### Fixed
+
+- **`webhookPayload.Timestamp` field type** changed from `string` to `int64`. Mattermost sends `timestamp` as a JSON number (Unix milliseconds), not a string. v0.1.3's struct definition assumed string → `json.Unmarshal` errored with `cannot unmarshal number into Go struct field webhookPayload.timestamp of type string` → every inbound @-mention dropped. Form-encoded path now uses `parseInt64` helper for the same field (best-effort numeric parse; 0 if missing/unparseable).
+
+### How this surfaced
+
+Component C bidi smoke from `agent-events` Mattermost channel hit two earlier blockers first (Mattermost SSRF policy blocking the 10.0.5.38 callback; before that, leaf-only TLS cert chain) — once both were fixed Mattermost DID fire the webhook and our parsing bug surfaced as `webhook parse failed` warnings in the inbox-webhook log. v0.1.5 is the actual fix.
+
 ## [0.1.4] — 2026-05-18
 
 Hotfix: outbox-worker TLS-cert validation for homelab Mattermost.

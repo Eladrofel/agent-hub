@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,13 +150,20 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 // "Splinter", "agent.operator", "agent-operator-mac".
 var mentionRe = regexp.MustCompile(`@([A-Za-z0-9][A-Za-z0-9._-]*)`)
 
+// parseInt64 returns the int64 value of s, or 0 if s is empty/unparseable.
+// Used for form-encoded numeric fields where best-effort parsing is fine.
+func parseInt64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
 // webhookPayload is the subset of Mattermost's outgoing-webhook body we use.
 type webhookPayload struct {
 	Token       string `json:"token"`
 	TeamID      string `json:"team_id"`
 	ChannelID   string `json:"channel_id"`
 	ChannelName string `json:"channel_name"`
-	Timestamp   string `json:"timestamp"`
+	Timestamp   int64  `json:"timestamp"` // Mattermost sends Unix ms as a JSON number, not a string
 	UserID      string `json:"user_id"`
 	UserName    string `json:"user_name"`
 	PostID      string `json:"post_id"`
@@ -253,7 +261,7 @@ func parseWebhookPayload(r *http.Request) (*webhookPayload, error) {
 		TeamID:      r.FormValue("team_id"),
 		ChannelID:   r.FormValue("channel_id"),
 		ChannelName: r.FormValue("channel_name"),
-		Timestamp:   r.FormValue("timestamp"),
+		Timestamp:   parseInt64(r.FormValue("timestamp")), // form-encoded: best-effort numeric parse; 0 if unparseable
 		UserID:      r.FormValue("user_id"),
 		UserName:    r.FormValue("user_name"),
 		PostID:      r.FormValue("post_id"),
