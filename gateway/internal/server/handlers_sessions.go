@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -71,7 +72,7 @@ func (a *App) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	// doesn't fail the call, since the durable state (agent_sessions row)
 	// already landed.
 	a.emitLifecycleEvent(r, caller.ID, "session.started", sess.ID, req.ClaudeSessionID,
-		"session started for "+caller.Name, map[string]any{
+		formatStartSummary(caller, req.ClaudeSessionID, req.ProjectSlug), map[string]any{
 			"start_reason": req.StartReason,
 			"branch":       req.Branch,
 		})
@@ -152,7 +153,8 @@ func (a *App) handleSessionCheckpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.emitLifecycleEvent(r, caller.ID, "session.checkpointed", sess.ID, req.ClaudeSessionID,
-		req.Summary, map[string]any{
+		formatCheckpointSummary(caller, req.ClaudeSessionID, req.Summary, ckpt.Status),
+		map[string]any{
 			"checkpoint_id":   ckpt.ID,
 			"checkpoint_type": ckpt.CheckpointType,
 			"status":          ckpt.Status,
@@ -196,7 +198,7 @@ func (a *App) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.emitLifecycleEvent(r, caller.ID, "session.ended", sess.ID, req.ClaudeSessionID,
-		"session ended for "+caller.Name, map[string]any{
+		formatEndSummary(caller, req.ClaudeSessionID, req.FinalStatus), map[string]any{
 			"final_status": req.FinalStatus,
 		})
 
@@ -263,4 +265,67 @@ func (a *App) emitLifecycleEvent(r *http.Request, agentID, eventType, sessionID,
 		a.Logger.Warn("lifecycle event emission failed",
 			"event_type", eventType, "claude_session_id", claudeSessionID, "err", err)
 	}
+}
+
+// =============================================================================
+// Lifecycle summary formatters (v0.1.8)
+//
+// Build operator-facing summary strings for the curated lifecycle events
+// (session.started / session.checkpointed / session.ended). The summary
+// is what Mattermost surfaces via the outbox worker — making it richer
+// helps the operator correlate the chat ping with the right session/
+// project/agent without re-querying.
+//
+// The EVENT PAYLOAD is unchanged; we only enrich the display surface.
+// =============================================================================
+
+// callerDisplayName returns the agent's alias (e.g. "Splinter") when set,
+// else falls back to the canonical agent name ("agent-operator-mac").
+func callerDisplayName(c *auth.Agent) string {
+	if c.Alias != "" {
+		return c.Alias
+	}
+	return c.Name
+}
+
+// shortSessionID returns the first 8 chars of the claude-session-id for
+// terse display, or the whole string if it's shorter.
+func shortSessionID(sid string) string {
+	if len(sid) >= 8 {
+		return sid[:8]
+	}
+	return sid
+}
+
+func formatStartSummary(c *auth.Agent, claudeSessionID, projectSlug string) string {
+	base := fmt.Sprintf("[start] %s — session %s",
+		callerDisplayName(c), shortSessionID(claudeSessionID))
+	if projectSlug != "" {
+		return base + ", project=" + projectSlug
+	}
+	return base
+}
+
+func formatCheckpointSummary(c *auth.Agent, claudeSessionID, userSummary, status string) string {
+	base := fmt.Sprintf("[checkpoint] %s — session %s",
+		callerDisplayName(c), shortSessionID(claudeSessionID))
+	// Prefer the user-supplied summary for chat context; otherwise fall
+	// back to the checkpoint status (e.g. "in_progress", "blocked").
+	switch {
+	case userSummary != "":
+		return base + " — " + userSummary
+	case status != "":
+		return base + ", status=" + status
+	default:
+		return base
+	}
+}
+
+func formatEndSummary(c *auth.Agent, claudeSessionID, finalStatus string) string {
+	base := fmt.Sprintf("[end] %s — session %s",
+		callerDisplayName(c), shortSessionID(claudeSessionID))
+	if finalStatus != "" {
+		return base + ", " + finalStatus
+	}
+	return base
 }

@@ -32,9 +32,16 @@ import (
 )
 
 // Agent is the identity attached to authenticated requests.
+//
+// Alias is the human-friendly display name (sourced from agents.
+// mattermost_username, e.g. "Splinter" / "Mikey"). Populated when set;
+// empty string when the agent has no alias. Used by handlers that build
+// operator-facing summaries (lifecycle events, Mattermost surfaces) so
+// the output reads like "Splinter" rather than "agent-operator-mac".
 type Agent struct {
 	ID          string
 	Name        string
+	Alias       string
 	Role        string
 	Permissions map[string]any
 }
@@ -119,7 +126,7 @@ var errNoMatch = errors.New("no agent matched")
 
 func (m *Middleware) matchAgent(ctx context.Context, token string) (*Agent, error) {
 	rows, err := m.Pool.Query(ctx,
-		`SELECT id, name, role, token_hash, permissions
+		`SELECT id, name, mattermost_username, role, token_hash, permissions
 		   FROM agents
 		  WHERE token_hash IS NOT NULL`)
 	if err != nil {
@@ -132,12 +139,13 @@ func (m *Middleware) matchAgent(ctx context.Context, token string) (*Agent, erro
 		var (
 			id          string
 			name        string
+			alias       *string
 			role        *string
 			hash        string
 			permsRaw    []byte
 			permissions map[string]any
 		)
-		if err := rows.Scan(&id, &name, &role, &hash, &permsRaw); err != nil {
+		if err := rows.Scan(&id, &name, &alias, &role, &hash, &permsRaw); err != nil {
 			return nil, err
 		}
 		if bcrypt.CompareHashAndPassword([]byte(hash), tokenBytes) != nil {
@@ -147,6 +155,9 @@ func (m *Middleware) matchAgent(ctx context.Context, token string) (*Agent, erro
 			_ = json.Unmarshal(permsRaw, &permissions)
 		}
 		out := &Agent{ID: id, Name: name, Permissions: permissions}
+		if alias != nil {
+			out.Alias = *alias
+		}
 		if role != nil {
 			out.Role = *role
 		}
