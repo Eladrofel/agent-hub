@@ -30,6 +30,7 @@ type Config struct {
 	MattermostDefaultOutbox string   // MATTERMOST_DEFAULT_OUTBOX_CHANNEL
 	Version                 string   // build-time version string surfaced on /v1/health/full
 	DistDir                 string   // AGENT_HUB_DIST_DIR — directory containing agentctl binaries served at /dist/*
+	GatewayURL              string   // AGENT_HUB_GATEWAY_URL — public URL returned in join-code redemption responses
 }
 
 // Run boots the gateway and blocks until ctx is cancelled. Migration is
@@ -59,6 +60,14 @@ func Run(ctx context.Context, cfg Config) error {
 
 	mw := &auth.Middleware{Pool: st.Pool, AdminToken: cfg.AdminToken}
 
+	// Bootstrap signed-join-codes secrets (HMAC key + mint-authority token).
+	// Idempotent: persisted in the kv_store table created by migration 003.
+	hmacKey, mintAuth, err := bootstrapJoinCodeSecrets(ctx, st, logger)
+	if err != nil {
+		return fmt.Errorf("bootstrap join-code secrets: %w", err)
+	}
+	joinCodes := NewPostgresJoinCodeStore(st.Pool)
+
 	version := cfg.Version
 	if version == "" {
 		version = "v0.1.7"
@@ -73,6 +82,10 @@ func Run(ctx context.Context, cfg Config) error {
 		StartedAt:               time.Now().UTC(),
 		Version:                 version,
 		DistDir:                 cfg.DistDir,
+		GatewayURL:              cfg.GatewayURL,
+		JoinCodes:               joinCodes,
+		joinCodeHMACKey:         hmacKey,
+		mintAuthorityToken:      mintAuth,
 	}
 
 	r := NewRouter(app, loggingMiddleware(logger))
@@ -115,7 +128,11 @@ type App struct {
 	MattermostDefaultOutbox string // fallback channel for curated events
 	StartedAt               time.Time
 	Version                 string
-	DistDir                 string // filesystem dir for /dist/* binary serving; empty disables (503)
+	DistDir                 string        // filesystem dir for /dist/* binary serving; empty disables (503)
+	GatewayURL              string        // surfaced in join-code redemption responses
+	JoinCodes               JoinCodeStore // signed-join-code persistence (v0.4.0)
+	joinCodeHMACKey         []byte        // HMAC-SHA256 signing key for join codes
+	mintAuthorityToken      string        // dual-auth secret for POST /v1/admin/join-codes
 }
 
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {

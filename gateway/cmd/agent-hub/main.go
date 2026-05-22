@@ -67,6 +67,7 @@ func main() {
 				MattermostDefaultOutbox: envOr("MATTERMOST_DEFAULT_OUTBOX_CHANNEL", "agent-events"),
 				Version:                 fmt.Sprintf("v%s", version),
 				DistDir:                 envOr("AGENT_HUB_DIST_DIR", "/opt/agent-hub/dist"),
+				GatewayURL:              os.Getenv("AGENT_HUB_GATEWAY_URL"),
 			}
 			if cfg.DatabaseURL == "" {
 				return fmt.Errorf("DATABASE_URL is required")
@@ -117,6 +118,40 @@ func main() {
 			return inbox.RunWebhook(ctx, cfg)
 		},
 	})
+
+	printTokens := &cobra.Command{
+		Use:   "print-tokens",
+		Short: "Print the gateway's join-code HMAC key + mint-authority token (v0.4.0)",
+		Long: `Reads the v0.4.0 federated-trust secrets (JOIN_CODE_HMAC_KEY +
+MINT_AUTHORITY_TOKEN) from the kv_store table, where they're persisted
+on first boot if no env-var override was set.
+
+Intended for ` + "`docker exec agent-hub agent-hub print-tokens`" + ` so the
+operator can retrieve the auto-generated secrets after first boot.
+Refuses to run unless stdout looks like a terminal (TERM set) so
+secrets don't accidentally leak into log scrapers; pass --force to
+override.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			force, _ := cmd.Flags().GetBool("force")
+			if !force && os.Getenv("TERM") == "" {
+				return fmt.Errorf("refusing to print secrets: stdout not a terminal (TERM unset); pass --force to override")
+			}
+			dsn := os.Getenv("DATABASE_URL")
+			if dsn == "" {
+				return fmt.Errorf("DATABASE_URL is required")
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			st, err := store.Open(ctx, dsn)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			return server.PrintTokens(ctx, st, cmd.OutOrStdout())
+		},
+	}
+	printTokens.Flags().Bool("force", false, "print secrets even if stdout is not a terminal")
+	root.AddCommand(printTokens)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

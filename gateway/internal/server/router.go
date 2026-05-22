@@ -31,6 +31,9 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 	r.Get("/dist/agentctl-linux-amd64", app.handleDistAgentctl("agentctl-linux-amd64"))
 	r.Get("/dist/agentctl-darwin-arm64", app.handleDistAgentctl("agentctl-darwin-arm64"))
 
+	// Public join-code redemption — the signed code IS the authentication.
+	r.Post("/v1/join-codes/redeem", app.handleJoinCodeRedeem)
+
 	r.Route("/v1", func(r chi.Router) {
 		// Per-host token endpoints.
 		r.Group(func(r chi.Router) {
@@ -55,6 +58,15 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 			r.Get("/agents", app.handleAgentsList)
 			r.Get("/events", app.handleEventsList)
 			r.Get("/health/full", app.handleHealthFull)
+		})
+		// Admin endpoints with additional X-Mint-Authority dual-auth.
+		// Track C contract: RequireAdmin returns 401 for missing/wrong
+		// Authorization; requireMintAuthority returns 403 for missing/
+		// wrong X-Mint-Authority.
+		r.Group(func(r chi.Router) {
+			r.Use(app.Auth.RequireAdmin)
+			r.Use(app.requireMintAuthority)
+			r.Post("/admin/join-codes", app.handleJoinCodeMint)
 		})
 	})
 
