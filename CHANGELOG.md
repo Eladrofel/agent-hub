@@ -2,6 +2,58 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.8] — 2026-05-22
+
+Three targeted bug fixes from the live-fleet smoke run that landed immediately
+after v0.1.7 ship. No new endpoints, no schema changes, no `agentctl` changes
+— gateway-only and surgical. Total scope ~70 LOC + tests.
+
+### Gateway — bug fixes
+
+- **`print-tokens` MINT_AUTHORITY_TOKEN was binary garbage.** v0.1.7 persisted
+  the mint-authority secret as 32 raw random bytes in `kv_store` and printed
+  the bytes verbatim, so the operator's terminal showed unprintable chars and
+  the value couldn't be copy-pasted into a `--mint-authority-token-file`. The
+  HMAC key already used hex; the mint-authority did not. **v0.1.8** moves the
+  mint-authority canonical wire/storage format to a 64-char hex string
+  (matches `JOIN_CODE_HMAC_KEY`'s encoding). An idempotent migration runs on
+  boot: any pre-v0.1.8 `kv_store` row whose value isn't valid 64-char hex
+  gets hex-encoded and rewritten. Env-var override (`MINT_AUTHORITY_TOKEN`
+  set externally) is accepted as-is and *not* persisted, so the operator can
+  still paste a raw value if they want — env wins on next boot anyway.
+  `print-tokens` also detects a pre-migration row at print time and
+  hex-encodes on the fly for display safety.
+- **`/dist/*` HEAD probes returned 405.** chi doesn't auto-derive HEAD from
+  GET, so caching proxies / link-checkers that probe before downloading
+  failed. Registered explicit `r.Head` alongside `r.Get` for both
+  `/dist/agentctl-linux-amd64` and `/dist/agentctl-darwin-arm64`. The handler
+  uses `http.ServeContent` which strips the body on HEAD natively, so no
+  handler change was needed.
+- **Lifecycle event summaries were bare.** `session.started` /
+  `session.checkpointed` / `session.ended` events surfaced in Mattermost as
+  `"session ended for agent-operator-mac"` — no session id, no
+  `final_status`, no project. Operator couldn't correlate the chat ping with
+  the underlying session. Summaries now read like
+  `[end] Splinter — session 12345678, user_exit` and
+  `[start] Splinter — session 12345678, project=demo`. Alias (e.g.
+  "Splinter") is preferred over canonical name when set; the agent alias is
+  loaded from `agents.mattermost_username` into the auth context. Event
+  payloads are unchanged — only the operator-facing summary string is
+  enriched.
+
+### Tests
+
+- 4 new integration tests on the mint-authority migration (legacy-raw →
+  hex, already-hex no-op, env-override not persisted, `PrintTokens` output
+  is pure printable ASCII).
+- 1 new unit test on `/dist/*` HEAD probes (200 + ETag + zero-length body).
+- 8 new pure-unit tests on the lifecycle summary formatters (alias
+  preference, canonical-name fallback, project-slug toggle, `final_status`
+  variants, checkpoint summary fallback to status, short-session-id safety
+  on strings < 8 chars).
+
+`go vet ./...` clean. `go build ./...` clean. All unit tests pass.
+
 ## [0.1.7] — 2026-05-22
 
 Federated trust path for agent enrolment + 9 follow-up polish items from the

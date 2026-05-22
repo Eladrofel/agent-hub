@@ -70,7 +70,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	version := cfg.Version
 	if version == "" {
-		version = "v0.1.7"
+		version = "v0.1.8"
 	}
 
 	app := &App{
