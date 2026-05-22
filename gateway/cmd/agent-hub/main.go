@@ -66,6 +66,7 @@ func main() {
 				SanitiserExemptHosts:    splitCSV(os.Getenv("SANITISER_EXEMPT_HOSTS")),
 				MattermostDefaultOutbox: envOr("MATTERMOST_DEFAULT_OUTBOX_CHANNEL", "agent-events"),
 				Version:                 fmt.Sprintf("v%s", version),
+				DistDir:                 envOr("AGENT_HUB_DIST_DIR", "/opt/agent-hub/dist"),
 			}
 			if cfg.DatabaseURL == "" {
 				return fmt.Errorf("DATABASE_URL is required")

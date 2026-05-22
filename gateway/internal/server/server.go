@@ -29,6 +29,7 @@ type Config struct {
 	SanitiserExemptHosts    []string // SANITISER_EXEMPT_HOSTS (comma-split)
 	MattermostDefaultOutbox string   // MATTERMOST_DEFAULT_OUTBOX_CHANNEL
 	Version                 string   // build-time version string surfaced on /v1/health/full
+	DistDir                 string   // AGENT_HUB_DIST_DIR — directory containing agentctl binaries served at /dist/*
 }
 
 // Run boots the gateway and blocks until ctx is cancelled. Migration is
@@ -71,6 +72,7 @@ func Run(ctx context.Context, cfg Config) error {
 		MattermostDefaultOutbox: cfg.MattermostDefaultOutbox,
 		StartedAt:               time.Now().UTC(),
 		Version:                 version,
+		DistDir:                 cfg.DistDir,
 	}
 
 	r := NewRouter(app, loggingMiddleware(logger))
@@ -113,6 +115,7 @@ type App struct {
 	MattermostDefaultOutbox string // fallback channel for curated events
 	StartedAt               time.Time
 	Version                 string
+	DistDir                 string // filesystem dir for /dist/* binary serving; empty disables (503)
 }
 
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {

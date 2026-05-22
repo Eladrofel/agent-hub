@@ -25,6 +25,12 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 	r.Get("/health", app.handleHealth)
 	r.Head("/health", app.handleHealth) // `wget --spider` (docker healthcheck) sends HEAD
 
+	// Public /dist/* binary serving — outside any auth middleware. Fresh
+	// VMs `curl` agentctl from here during /join before they have any
+	// credentials. 404 if file missing; 503 if DistDir unset.
+	r.Get("/dist/agentctl-linux-amd64", app.handleDistAgentctl("agentctl-linux-amd64"))
+	r.Get("/dist/agentctl-darwin-arm64", app.handleDistAgentctl("agentctl-darwin-arm64"))
+
 	r.Route("/v1", func(r chi.Router) {
 		// Per-host token endpoints.
 		r.Group(func(r chi.Router) {
