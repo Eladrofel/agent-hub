@@ -2,6 +2,151 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.7] — 2026-05-22
+
+Federated trust path for agent enrolment + 9 follow-up polish items from the
+v0.3.x fleet smoke. Pairs with `concept-workflow` plugin **v0.4.0**, which
+documents the federated path operator-side and consumes the new signed-join-code
+endpoints from `agentctl`.
+
+The headline change is **signed join-codes**: an operator with elevated dual
+auth can mint a short-lived signed credential, hand it out-of-band to a
+third-party agent-VM owner, and that owner runs `agentctl join --code <code>`
+on their own machine — no SSH or admin-token sharing required. The code is
+HMAC-SHA256 signed, single-use, TTL-bounded (5min..7d), and atomically
+redeemed.
+
+### Gateway — new endpoints
+
+- **`POST /v1/admin/join-codes`** — mint a signed code. Dual auth: the existing
+  `Authorization: Bearer <admin-token>` AND `X-Mint-Authority: Bearer
+  <mint-authority-token>`. The mint-authority token lives only on the gateway
+  host's filesystem (persisted in the new `kv_store` table) and prevents an
+  attacker who pops the admin token from minting infinite codes. Response codes
+  split: **401** for admin-token failure, **403** for mint-authority failure
+  (operator can disambiguate which credential is wrong without log access).
+- **`POST /v1/join-codes/redeem`** — public; the code itself is the auth.
+  Verifies HMAC sig, looks up jti in the `join_codes` table, checks expiry, then
+  atomically `UPDATE … WHERE redeemed_at IS NULL RETURNING` to make 409
+  detection race-free. On success, mints the agent's per-host bearer via the
+  existing `agents.MintToken` helper (same path as
+  `POST /v1/admin/agents/{name}/mint-token`). Returns 410/409/401/404 with
+  human-readable error bodies the CLI parses into operator-facing messages.
+- **`GET /v1/agents`** — operator-only fleet listing with canonical name,
+  alias, role, joined_at, last_seen, and channel memberships derived from
+  emitted-event history.
+- **`GET /v1/events`** — operator-only paginated event history. Supports
+  `since`, `agent`, `type`, `limit` (default 100, max 500), and opaque
+  `cursor` token over `(created_at, id)` for stable pagination as new events
+  arrive.
+- **`GET /v1/health/full`** — extended health: gateway uptime + version,
+  database connectivity + lag estimate, outbox-worker last-tick + queue
+  depth, inbox-webhook last-received-at per agent, Mattermost reachability,
+  count of failed-emit cache entries per peer.
+- **`GET /dist/agentctl-linux-amd64`** and **`/dist/agentctl-darwin-arm64`**
+  — public binary downloads served from `AGENT_HUB_DIST_DIR` (default
+  `/opt/agent-hub/dist`). Federated agents `curl` these directly without
+  SSH from the operator. `Content-Type: application/octet-stream`,
+  `Content-Disposition: attachment`, ETag from mtime+size, 404 if missing,
+  503 if `DistDir` unconfigured.
+
+### Gateway — new subcommand
+
+- **`agent-hub print-tokens`** — reads the persisted `JOIN_CODE_HMAC_KEY` +
+  `MINT_AUTHORITY_TOKEN` from `kv_store` and prints to stdout. Intended for
+  `docker exec agent-hub agent-hub print-tokens` so the operator can retrieve
+  the auto-generated secrets after first boot. Refuses to run if `TERM` is
+  unset (cheap "not redirected to a remote pipe" heuristic); pass `--force`
+  to override.
+
+### Gateway — bug fixes
+
+- **`#45`** — inbox-webhook @-mention routing is now **case-insensitive**
+  (`strings.EqualFold`) for both canonical names and aliases. Closes the gap
+  where `@SPLINTER` would not route to `@Splinter`'s inbox. Original mention
+  spelling preserved on the stored event for forensics.
+- **`#46`** — `sanitiser.CheckMattermost` adds a **structural-field exemption**
+  for known-safe Mattermost identifiers (`post_id`, `user_id`, `team_id`,
+  `channel_id`, `file_ids`, `root_id`, `parent_id`, `trigger_id`). Free-form
+  fields (`text`, `message`) still get full pattern scrutiny — the exemption
+  is field-name-based, not content-shape-based. Generic `Check()` is
+  unchanged; MM-aware path is opt-in via `CheckMattermost()`.
+- **`#48`** — top-of-file design memo on `outbox/worker.go` documents the
+  intentional dual-plane `sanitiser.blocked` relay (events plane = durable
+  record, MM = curated surface with redacted placeholder). Prevents future
+  "fix" PRs that drop sanitiser.blocked outbox rows.
+
+### Gateway — schema
+
+- **Migration `003_join_codes_kv.sql`** adds the `join_codes` table
+  (jti UUID PK, agent_canonical, alias, role, expires_at, redeemed_at,
+  redeemed_by_hostname) + the generic `kv_store` table for HMAC-key /
+  mint-authority-token persistence across restarts.
+
+### `agentctl` — new subcommands
+
+- **`agentctl join-code mint`** — operator-side join-code minting. Flags:
+  `--agent`, `--alias`, `--ttl <duration>` (default 24h), `--role`,
+  `--gateway-url`, `--admin-token-file`, `--mint-authority-token-file`.
+  Calls `POST /v1/admin/join-codes` with dual auth and prints the code +
+  a paste-ready hand-off block (redemption command, gateway URL, TTL).
+- **`agentctl join --code <code>`** — third-party VM redeem path. Calls
+  `POST /v1/join-codes/redeem`, writes `mint_token` + `agent-events.env`
+  using the same on-disk layout as the existing `--bootstrap-token` branch,
+  then runs the same `register-agent` (+ optional smoke) flow. Friendly
+  error messages for HTTP 410 / 409 / 401 / 404. Gateway-supplied
+  `agent_canonical` / `alias` / `role` override CLI flags — the signed code
+  is the source of truth.
+
+### `agentctl` — bug fixes
+
+- **`#40`** — `agentctl join --gateway-url <url>` flag. Precedence: flag >
+  `AGENT_HUB_URL` env > config file. Flag-set value is exported via
+  `os.Setenv` BEFORE `config.Load` so all downstream calls (mint, env-file
+  write, register-agent, smoke) see the same URL. Persisted into
+  `agent-events.env` on success so future invocations don't need the flag.
+- **`#49`** — `Mattermost.EnsureTeamMember` adds bot-to-team add before any
+  channel-add. Idempotent: HTTP 400 with MM's
+  `api.team.add_user.to.team.failed.error` body is treated as success
+  (already-member). Other 4xx propagate with HTTP status surfaced. Closes
+  the channel-add `403: user not in team` gap on fresh MM teams.
+- **`#50`** — `Mattermost.resolveTeamName` auto-derives
+  `MATTERMOST_TEAM_NAME` from `GET /api/v4/teams` when the env var is
+  unset. Single-team admins get zero-config; zero/multi-team admins get a
+  clear error listing the visible teams and asking to set the env var
+  explicitly. Existing explicit `MATTERMOST_TEAM_NAME` path is preserved.
+
+### Sign / verify details
+
+- HMAC-SHA256 over a base64url-encoded JSON payload `{jti, agt, exp, rol}`.
+  Code format: `AGNT-<payload-b64url>.<sig-b64url>`.
+- Key resolution at boot: `JOIN_CODE_HMAC_KEY` env (hex or base64url, 16+
+  bytes after decode) → `kv_store` row → generate 32 random bytes + persist.
+  Logged once on first-boot generation (`slog.Info "generated join-code
+  HMAC key (one-time persistence)"`).
+- Same pattern for `MINT_AUTHORITY_TOKEN`.
+- `crypto/rand` for both key + jti generation. UUID inline (no `google/uuid`
+  dep added).
+
+### Tests
+
+- 5 new unit tests on sign/verify (round-trip, tampered sig, wrong key,
+  malformed shapes, jti uniqueness over 100 generations).
+- 11 new integration tests on mint+redeem (gated by
+  `AGENT_HUB_TEST_DATABASE_URL`; cover dual-auth failure modes, mint TTL
+  validation, full happy-path, double-redeem 409, expired 410, tampered
+  sig 401, bogus jti 404, missing-body 400).
+- 4 new tests on `/dist` serving (200 + Content-Type, 404, 503-when-disabled,
+  ETag).
+- 4 tests on `#46` sanitiser exemption (structural-field bypass, free-form
+  scrutiny, MM-id-shape-inside-text still scrutinised, generic `Check()`
+  does NOT bypass).
+- 3 tests on `#45` case-insensitive routing.
+- 4 tests on `#50` auto-derive.
+- 3 tests on `#49` EnsureTeamMember.
+
+`go vet ./...` clean. `go build ./...` clean. All unit tests pass.
+
 ## [0.1.6] — 2026-05-22
 
 Two new `agentctl` subcommands that close the operator-push / agent-pull split

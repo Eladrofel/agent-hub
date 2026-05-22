@@ -12,7 +12,7 @@ import (
 // newMockMM stands up an httptest server emulating the subset of the MM v4 API
 // the backend uses, with hook points for the team-list endpoint (#50) and the
 // team-members endpoint (#49).
-func newMockMM(t *testing.T, opts mockMMOpts) *Mattermost {
+func newMockMM(t *testing.T, opts *mockMMOpts) *Mattermost {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -70,8 +70,7 @@ func TestResolveTeamName_AutoDerivesSingleTeam(t *testing.T) {
 	opts := &mockMMOpts{
 		teams: []mmTeam{{ID: "t-only", Name: "lone-team", DisplayName: "Lone"}},
 	}
-	mm := newMockMM(t, *opts)
-	mm.BaseURL = mm.BaseURL // keep reference for clarity
+	mm := newMockMM(t, opts)
 	got, err := mm.resolveTeamName("admin-tok")
 	if err != nil {
 		t.Fatalf("resolveTeamName: %v", err)
@@ -97,7 +96,7 @@ func TestResolveTeamName_PreservesExplicitName(t *testing.T) {
 }
 
 func TestResolveTeamName_ErrorsWhenZeroTeams(t *testing.T) {
-	opts := mockMMOpts{teams: []mmTeam{}}
+	opts := &mockMMOpts{teams: []mmTeam{}}
 	mm := newMockMM(t, opts)
 	_, err := mm.resolveTeamName("admin-tok")
 	if err == nil {
@@ -109,7 +108,7 @@ func TestResolveTeamName_ErrorsWhenZeroTeams(t *testing.T) {
 }
 
 func TestResolveTeamName_ErrorsWhenMultipleTeams(t *testing.T) {
-	opts := mockMMOpts{teams: []mmTeam{
+	opts := &mockMMOpts{teams: []mmTeam{
 		{ID: "a", Name: "alpha", DisplayName: "Alpha"},
 		{ID: "b", Name: "beta", DisplayName: "Beta"},
 	}}
@@ -128,7 +127,7 @@ func TestResolveTeamName_ErrorsWhenMultipleTeams(t *testing.T) {
 // =============================================================================
 
 func TestEnsureTeamMember_Success(t *testing.T) {
-	opts := mockMMOpts{
+	opts := &mockMMOpts{
 		teams: []mmTeam{{ID: "t-only", Name: "lone-team", DisplayName: "Lone"}},
 	}
 	mm := newMockMM(t, opts)
@@ -140,7 +139,7 @@ func TestEnsureTeamMember_Success(t *testing.T) {
 func TestEnsureTeamMember_AlreadyMember_IsNoOp(t *testing.T) {
 	// MM returns 4xx with "already a member"-ish body on re-add; backend
 	// must treat that as success.
-	opts := mockMMOpts{
+	opts := &mockMMOpts{
 		teams: []mmTeam{{ID: "t-only", Name: "lone-team", DisplayName: "Lone"}},
 		teamMemberStatus: http.StatusBadRequest,
 		teamMemberBody:   `{"id":"api.team.add_user.to.team.failed.error","message":"User is already a member of this team"}`,
@@ -152,7 +151,7 @@ func TestEnsureTeamMember_AlreadyMember_IsNoOp(t *testing.T) {
 }
 
 func TestEnsureTeamMember_OtherErrorPropagates(t *testing.T) {
-	opts := mockMMOpts{
+	opts := &mockMMOpts{
 		teams:            []mmTeam{{ID: "t-only", Name: "lone-team", DisplayName: "Lone"}},
 		teamMemberStatus: http.StatusForbidden,
 		teamMemberBody:   `{"id":"api.team.add_user.to.team.failed.permissions","message":"forbidden"}`,
