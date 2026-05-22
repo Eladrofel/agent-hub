@@ -28,8 +28,15 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 	// Public /dist/* binary serving — outside any auth middleware. Fresh
 	// VMs `curl` agentctl from here during /join before they have any
 	// credentials. 404 if file missing; 503 if DistDir unset.
+	//
+	// HEAD is registered alongside GET so caching proxies + link-checkers
+	// that probe before downloading don't see 405 (chi doesn't auto-derive
+	// HEAD from GET). The handler uses http.ServeContent which strips the
+	// body on HEAD automatically.
 	r.Get("/dist/agentctl-linux-amd64", app.handleDistAgentctl("agentctl-linux-amd64"))
+	r.Head("/dist/agentctl-linux-amd64", app.handleDistAgentctl("agentctl-linux-amd64"))
 	r.Get("/dist/agentctl-darwin-arm64", app.handleDistAgentctl("agentctl-darwin-arm64"))
+	r.Head("/dist/agentctl-darwin-arm64", app.handleDistAgentctl("agentctl-darwin-arm64"))
 
 	// Public join-code redemption — the signed code IS the authentication.
 	r.Post("/v1/join-codes/redeem", app.handleJoinCodeRedeem)

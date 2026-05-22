@@ -77,6 +77,34 @@ func TestHandleDist_HappyPath(t *testing.T) {
 	}
 }
 
+func TestHandleDist_HeadRequestReturnsHeadersWithoutBody(t *testing.T) {
+	// HEAD probe (caching proxies, link-checkers) must succeed with the
+	// same headers GET produces and an empty body. http.ServeContent
+	// strips the body automatically when r.Method == "HEAD".
+	dir := t.TempDir()
+	body := []byte("#!/bin/sh\necho fake-agentctl\n")
+	full := filepath.Join(dir, "agentctl-linux-amd64")
+	if err := os.WriteFile(full, body, 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	app := newDistTestApp(t, dir)
+	h := app.handleDistAgentctl("agentctl-linux-amd64")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodHead, "/dist/agentctl-linux-amd64", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("content-type = %q, want octet-stream", got)
+	}
+	if w.Header().Get("ETag") == "" {
+		t.Error("ETag header missing on HEAD response")
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("HEAD response body length = %d, want 0", w.Body.Len())
+	}
+}
+
 func TestHandleDist_DirectoryReturns500(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "agentctl-linux-amd64"), 0o755); err != nil {
