@@ -2,6 +2,130 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.6] — 2026-05-22
+
+Two new `agentctl` subcommands that close the operator-push / agent-pull split
+introduced by `concept-workflow` plugin **v0.3.0** (the 4-skill bootstrap/join
+redesign). No gateway changes, no schema migration — purely client-side
+additions that reuse the existing `POST /v1/admin/agents/{name}/mint-token`,
+`POST /v1/agents/register`, and lifecycle endpoints.
+
+### Added — `agentctl join`
+
+- **New subcommand** wrapping the events-side bootstrap-then-register-then-smoke
+  flow that previously lived as a ~30-line bash sequence inside the operator-Mac
+  `/setup-agent-events` skill. Single command on each agent VM provisions itself
+  end-to-end:
+  1. Resolves `--bootstrap-token <path>|env:VARNAME` (chmod-600-enforced for
+     file paths; never logs the plaintext).
+  2. Calls `POST /v1/admin/agents/{name}/mint-token` to mint the per-host
+     bearer; writes it to `~/.config/concept-workflow/agent-hub-token` chmod
+     600 via an atomic rename.
+  3. Writes `~/.config/concept-workflow/agent-events.env` with the four env
+     vars (`AGENT_HUB_URL`, `AGENT_HUB_TOKEN_FILE`, `AGENT_NAME`,
+     `AGENT_PROJECT_SLUG`); shape mirrors v0.2.13's operator-Mac file.
+  4. Invokes the existing `register-agent` flow in-process (no shell-out) with
+     `--mattermost-username <alias>` so agent aliases (Splinter / Mikey /
+     Donnie) reach the gateway.
+  5. With `--smoke`, runs the full session-start → event emit (test.smoke) →
+     resume-context → session-end round-trip against the gateway to validate
+     the freshly-minted token works end-to-end.
+- **Idempotent.** Re-running with the same args is a no-op when the per-host
+  token file already exists chmod 600; print `token already present, using
+  existing`. `--rotate` forces a fresh mint.
+- **`--name` defaults** to `agent-operator-mac` on Darwin (the operator-Mac
+  case); required on every other GOOS.
+- **`--alias` prompt** falls back to interactive stdin when absent so the
+  agent VM can pick its own display name without operator dictation.
+- **Closes plugin-side bug `#30` constructively** by stamping the smoke
+  session-id with `setup-smoke-<name>-<unix-nanos>` so two consecutive joins
+  cannot collide on the `agent_sessions` row.
+
+### Added — `agentctl comms-join`
+
+- **New subcommand** that mirrors the join shape for the comms layer
+  (Mattermost in v0.1.6; Slack/Discord stubbed for v0.4). Per-VM bot user
+  provisioning + PAT mint + chmod-600 storage + env-file write, all
+  idempotent:
+  1. Resolves `--bootstrap-pat <path>|env:VARNAME` (operator-supplied
+     admin PAT; used once, never stored).
+  2. `Backend.Validate` confirms the admin PAT against `GET
+     /api/v4/users/me`.
+  3. `Backend.EnsureBotUser` looks up `<bot-name>` and POSTs to
+     `/api/v4/bots` if absent.
+  4. `Backend.AddBotToChannel` resolves the team + channel and POSTs the bot
+     to `/api/v4/channels/{id}/members`; treats "already member" responses
+     as success.
+  5. `Backend.MintPAT` calls `/api/v4/users/{id}/tokens` and writes the
+     plaintext to `~/.config/concept-workflow/mattermost-bot-pat` chmod 600.
+  6. Writes `~/.config/concept-workflow/concept-chat.env` with
+     `CONCEPT_CHAT_MM_URL`, `CONCEPT_CHAT_MM_PAT_FILE`,
+     `CONCEPT_CHAT_MM_CHANNEL`.
+- **`--backend mattermost|none|slack|discord`** — only `mattermost` is
+  implemented in v0.1.6. `none` is a no-op (events-only fleets). `slack` /
+  `discord` print "not yet implemented (v0.4 stub)" and exit 1.
+- **`--bot-name` defaults** to `<AGENT_NAME>-bot` so the per-VM bot user
+  matches the agent identity.
+- **`--channel` defaults** to `agent-comms`.
+- **`--rotate`** forces a fresh PAT mint even if
+  `mattermost-bot-pat` is already present chmod 600.
+- **systemd-creds dropped** for the comms PAT in v0.1.6+ (per plan
+  §"Token-storage consistency"). Single chmod-600 file pattern for both the
+  events token and the comms PAT; one audit surface, one recovery story.
+  Migration recipe in `concept-workflow` v0.3.0's `/join-agent-comms` skill
+  notes the cleanup step for hosts that previously held `systemd-creds`
+  blobs.
+
+### Added — pluggable backend interface
+
+- **`internal/agentctl/commands/comms_backends.Backend`** — minimal four-method
+  contract (`Validate`, `EnsureBotUser`, `AddBotToChannel`, `MintPAT`) so
+  future Slack/Discord backends slot in without touching the `comms-join`
+  subcommand wiring.
+- **`mattermost.go`** — concrete implementation against the v4 REST API.
+  Honours `MATTERMOST_TLS_SKIP_VERIFY` (same knob as the outbox-worker; see
+  `[0.1.4]`) so the homelab self-signed-cert deployment shape Just Works.
+
+### Changed
+
+- **Binary version:** `agentctl` `0.1.5` → `0.1.6`. `Makefile` `VERSION ?=
+  0.1.5` → `0.1.6`. (No gateway-binary bump this release — the gateway is
+  unchanged.)
+
+### Tests
+
+- **15 new unit tests** in `internal/agentctl/commands/`:
+  - `join_test.go` (8): flag validation, idempotent re-run skipping mint,
+    `--rotate` forcing fresh mint, env-file shape + chmod, smoke round-trip
+    call counts, register-agent body carries the alias, insecure bootstrap
+    token file rejected, smoke session-id is unique across consecutive runs
+    (bug `#30` regression test).
+  - `comms_join_test.go` (10): backend validation (`--backend` required,
+    slack/discord stub, none no-op), happy-path call counts + chmod-600 PAT
+    + env-file shape, default bot-name from `$AGENT_NAME`, default channel,
+    idempotent re-run skipping mint, `--rotate` forcing fresh mint,
+    validate-error best-effort vs strict.
+- **1 new integration test** (`TestIntegration_Join`) in
+  `internal/agentctl/commands/integration_test.go` — drives `agentctl join
+  --smoke` end-to-end against the live chi router + Postgres, verifies the
+  token file lands chmod 600, the agent row has the alias, the smoke
+  session + `test.smoke` event landed, and the idempotent re-run path
+  prints the expected message without re-minting.
+
+### Tracked follow-ups
+
+- **`#27`** — Integration-test isolation (server + agentctl/commands packages
+  share Postgres in parallel). New join integration test runs cleanly when
+  the suite is invoked with `go test -p 1 ./...`; parallel-run failures
+  remain a pre-existing condition tracked separately.
+
+### Plugin coupling
+
+`concept-workflow` plugin **v0.3.0+** ships the four matching skills
+(`/bootstrap-agent-events`, `/join-agent-events`, `/bootstrap-agent-comms`,
+`/join-agent-comms`) that consume these subcommands. Plugin v0.2.x continues
+to work with the v0.1.5 binary — v0.1.6 is strictly additive.
+
 ## [0.1.5] — 2026-05-18
 
 Hotfix: inbox-webhook payload-parse failure on Mattermost's outgoing webhook.
