@@ -43,7 +43,7 @@ import (
 )
 
 var (
-	version = "0.1.5"
+	version = "0.1.7"
 	commit  = "unknown"
 )
 
@@ -65,6 +65,7 @@ func main() {
 				SanitiserPatternsFile:   envOr("SANITISER_PATTERNS_FILE", "/etc/agent-hub/sanitiser-patterns.txt"),
 				SanitiserExemptHosts:    splitCSV(os.Getenv("SANITISER_EXEMPT_HOSTS")),
 				MattermostDefaultOutbox: envOr("MATTERMOST_DEFAULT_OUTBOX_CHANNEL", "agent-events"),
+				Version:                 fmt.Sprintf("v%s", version),
 			}
 			if cfg.DatabaseURL == "" {
 				return fmt.Errorf("DATABASE_URL is required")

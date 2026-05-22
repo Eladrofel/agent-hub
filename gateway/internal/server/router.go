@@ -44,6 +44,11 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 		r.Group(func(r chi.Router) {
 			r.Use(app.Auth.RequireAdmin)
 			r.Post("/admin/agents/{name}/mint-token", app.handleMintToken)
+
+			// Operator-only query endpoints (issue #43).
+			r.Get("/agents", app.handleAgentsList)
+			r.Get("/events", app.handleEventsList)
+			r.Get("/health/full", app.handleHealthFull)
 		})
 	})
 

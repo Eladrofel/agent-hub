@@ -28,6 +28,7 @@ type Config struct {
 	SanitiserPatternsFile   string   // SANITISER_PATTERNS_FILE
 	SanitiserExemptHosts    []string // SANITISER_EXEMPT_HOSTS (comma-split)
 	MattermostDefaultOutbox string   // MATTERMOST_DEFAULT_OUTBOX_CHANNEL
+	Version                 string   // build-time version string surfaced on /v1/health/full
 }
 
 // Run boots the gateway and blocks until ctx is cancelled. Migration is
@@ -57,12 +58,19 @@ func Run(ctx context.Context, cfg Config) error {
 
 	mw := &auth.Middleware{Pool: st.Pool, AdminToken: cfg.AdminToken}
 
+	version := cfg.Version
+	if version == "" {
+		version = "v0.1.7"
+	}
+
 	app := &App{
-		Logger:                 logger,
-		Store:                  st,
-		Sanitiser:              san,
-		Auth:                   mw,
+		Logger:                  logger,
+		Store:                   st,
+		Sanitiser:               san,
+		Auth:                    mw,
 		MattermostDefaultOutbox: cfg.MattermostDefaultOutbox,
+		StartedAt:               time.Now().UTC(),
+		Version:                 version,
 	}
 
 	r := NewRouter(app, loggingMiddleware(logger))
@@ -103,6 +111,8 @@ type App struct {
 	Sanitiser               *sanitiser.Sanitiser
 	Auth                    *auth.Middleware
 	MattermostDefaultOutbox string // fallback channel for curated events
+	StartedAt               time.Time
+	Version                 string
 }
 
 func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
