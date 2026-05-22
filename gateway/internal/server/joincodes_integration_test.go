@@ -5,7 +5,9 @@ package server
 // as server_test.go.
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -308,5 +310,162 @@ func TestJoinCode_Redeem_NoBody_400(t *testing.T) {
 	w := env.redeem(t, redeemRequest{Hostname: "claude-x"})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("code = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// v0.1.8 — MINT_AUTHORITY_TOKEN hex encoding + migration
+// =============================================================================
+
+// bootstrapTestEnv returns a minimal store with kv_store + join_codes
+// truncated, suitable for bootstrap / PrintTokens tests. Skips when no DB.
+func bootstrapTestEnv(t *testing.T) (context.Context, *store.Store) {
+	t.Helper()
+	dsn := os.Getenv("AGENT_HUB_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AGENT_HUB_TEST_DATABASE_URL not set; skipping integration tests")
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	_, _ = st.Pool.Exec(ctx, "TRUNCATE TABLE kv_store")
+	_, _ = st.Pool.Exec(ctx, "TRUNCATE TABLE join_codes")
+	// Clear any env-var overrides that could leak in from the runner.
+	t.Setenv(envJoinCodeHMACKey, "")
+	t.Setenv(envMintAuthorityToken, "")
+	return ctx, st
+}
+
+func TestBootstrap_MintAuthority_MigratesLegacyRawBytesToHex(t *testing.T) {
+	ctx, st := bootstrapTestEnv(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Seed kv_store with v0.1.7's legacy representation: 32 raw random bytes
+	// that decidedly do NOT parse as 64-char hex.
+	legacy := []byte{
+		0x76, 0x00, 0x01, 0x02, 0xff, 0xfe, 0xfd, 0xfc,
+		0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+		0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+		0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+	}
+	if err := kvSet(ctx, st.Pool, kvKeyMintAuthority, legacy); err != nil {
+		t.Fatalf("seed legacy: %v", err)
+	}
+
+	_, mintAuth, err := bootstrapJoinCodeSecrets(ctx, st, logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if len(mintAuth) != 64 {
+		t.Fatalf("mintAuth len = %d, want 64 hex chars; got %q", len(mintAuth), mintAuth)
+	}
+	if _, derr := hex.DecodeString(mintAuth); derr != nil {
+		t.Fatalf("mintAuth is not hex: %v (%q)", derr, mintAuth)
+	}
+	if mintAuth != hex.EncodeToString(legacy) {
+		t.Errorf("mintAuth hex mismatch: got %q want %q",
+			mintAuth, hex.EncodeToString(legacy))
+	}
+
+	// Idempotency: second bootstrap returns the same value and does NOT
+	// double-encode (which would yield 128 chars).
+	_, mintAuth2, err := bootstrapJoinCodeSecrets(ctx, st, logger)
+	if err != nil {
+		t.Fatalf("bootstrap 2: %v", err)
+	}
+	if mintAuth2 != mintAuth {
+		t.Errorf("second bootstrap drift: %q != %q", mintAuth2, mintAuth)
+	}
+}
+
+func TestBootstrap_MintAuthority_AlreadyHex_NoMigration(t *testing.T) {
+	ctx, st := bootstrapTestEnv(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Seed with a value that is ALREADY 64-char hex — migration must
+	// be a no-op.
+	already := "deadbeef" + "deadbeef" + "deadbeef" + "deadbeef" +
+		"cafef00d" + "cafef00d" + "cafef00d" + "cafef00d"
+	if len(already) != 64 {
+		t.Fatalf("test bug: seed len %d", len(already))
+	}
+	if err := kvSet(ctx, st.Pool, kvKeyMintAuthority, []byte(already)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, mintAuth, err := bootstrapJoinCodeSecrets(ctx, st, logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if mintAuth != already {
+		t.Errorf("mintAuth = %q, want %q (no migration)", mintAuth, already)
+	}
+
+	// Verify kv_store row is untouched.
+	got, err := kvGet(ctx, st.Pool, kvKeyMintAuthority)
+	if err != nil {
+		t.Fatalf("kvGet: %v", err)
+	}
+	if string(got) != already {
+		t.Errorf("kv row was rewritten: %q != %q", string(got), already)
+	}
+}
+
+func TestBootstrap_MintAuthority_EnvOverride_NotPersisted(t *testing.T) {
+	ctx, st := bootstrapTestEnv(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Operator-pasted raw secret via env var. Per design: accept as-is,
+	// don't persist (env wins on next boot anyway), and don't try to
+	// migrate (the operator chose the format).
+	t.Setenv(envMintAuthorityToken, "my-raw-operator-secret")
+
+	_, mintAuth, err := bootstrapJoinCodeSecrets(ctx, st, logger)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if mintAuth != "my-raw-operator-secret" {
+		t.Errorf("env value not returned: %q", mintAuth)
+	}
+
+	// kv_store row must NOT have been written.
+	_, err = kvGet(ctx, st.Pool, kvKeyMintAuthority)
+	if err == nil {
+		t.Error("env-sourced value was persisted; expected kv row absent")
+	}
+}
+
+func TestPrintTokens_MintAuthorityIsAsciiPrintable(t *testing.T) {
+	ctx, st := bootstrapTestEnv(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// First boot generates fresh random bytes; v0.1.8 migration must
+	// have converted them to hex before any operator runs print-tokens.
+	if _, _, err := bootstrapJoinCodeSecrets(ctx, st, logger); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := PrintTokens(ctx, st, &buf); err != nil {
+		t.Fatalf("PrintTokens: %v", err)
+	}
+
+	out := buf.String()
+	// Every byte in the output must be printable ASCII (0x20–0x7e) or
+	// whitespace (\n, \t). No binary garbage.
+	for i, b := range []byte(out) {
+		if b == '\n' || b == '\t' {
+			continue
+		}
+		if b < 0x20 || b > 0x7e {
+			t.Errorf("non-printable byte 0x%02x at offset %d in PrintTokens output:\n%q",
+				b, i, out)
+		}
 	}
 }

@@ -219,19 +219,39 @@ const (
 // token in priority order: env var → kv_store row → generate fresh and
 // persist. The generate-and-persist path logs once so the operator has a
 // breadcrumb on first boot.
+//
+// MINT_AUTHORITY_TOKEN canonical wire/storage format is a 64-char hex
+// string (32 bytes hex-encoded). v0.1.7 persisted 32 raw random bytes
+// which printed as binary garbage from `print-tokens` and blocked
+// copy-paste; v0.1.8 migrates legacy rows on boot (idempotent).
 func bootstrapJoinCodeSecrets(ctx context.Context, st *store.Store, logger *slog.Logger) (hmacKey []byte, mintAuth string, err error) {
-	hmacKey, err = loadOrGenerateBytes(ctx, st, logger,
+	hmacKey, _, err = loadOrGenerateBytes(ctx, st, logger,
 		envJoinCodeHMACKey, kvKeyJoinCodeHMAC, "join-code HMAC key", decodeKeyFromEnv)
 	if err != nil {
 		return nil, "", err
 	}
-	mintAuthBytes, err := loadOrGenerateBytes(ctx, st, logger,
+	mintAuthBytes, mintAuthFromEnv, err := loadOrGenerateBytes(ctx, st, logger,
 		envMintAuthorityToken, kvKeyMintAuthority, "mint-authority token",
 		func(s string) ([]byte, error) { return []byte(s), nil })
 	if err != nil {
 		return nil, "", err
 	}
-	return hmacKey, string(mintAuthBytes), nil
+	mintAuthStr := string(mintAuthBytes)
+	// Migration: env-sourced values are accepted as-is (operator pasted
+	// whatever they want, raw or hex) and NOT persisted, so env wins on
+	// next boot. kv-sourced values must be 64-char hex; if not (legacy
+	// v0.1.7 row), hex-encode the raw bytes and overwrite. Idempotent.
+	if !mintAuthFromEnv {
+		if _, derr := hex.DecodeString(mintAuthStr); derr != nil || len(mintAuthStr) != 64 {
+			mintAuthStr = hex.EncodeToString(mintAuthBytes)
+			if err := kvSet(ctx, st.Pool, kvKeyMintAuthority, []byte(mintAuthStr)); err != nil {
+				return nil, "", fmt.Errorf("migrate mint-authority to hex: %w", err)
+			}
+			logger.Info("migrated mint-authority token to hex representation (v0.1.8)",
+				"kv_key", kvKeyMintAuthority)
+		}
+	}
+	return hmacKey, mintAuthStr, nil
 }
 
 // decodeKeyFromEnv accepts either hex or raw-url-base64 (32 bytes either way).
@@ -247,34 +267,39 @@ func decodeKeyFromEnv(s string) ([]byte, error) {
 	return nil, fmt.Errorf("JOIN_CODE_HMAC_KEY must be 16+ bytes as hex or base64url")
 }
 
+// loadOrGenerateBytes returns the secret bytes plus a flag indicating
+// whether the value originated from the env var (true) versus kv_store /
+// fresh generation (false). The env-source flag lets the mint-authority
+// bootstrap skip its hex migration when the operator explicitly pasted a
+// value via $MINT_AUTHORITY_TOKEN.
 func loadOrGenerateBytes(
 	ctx context.Context, st *store.Store, logger *slog.Logger,
 	envName, kvKey, humanLabel string,
 	decodeEnv func(string) ([]byte, error),
-) ([]byte, error) {
+) ([]byte, bool, error) {
 	if raw := os.Getenv(envName); raw != "" {
 		v, err := decodeEnv(raw)
 		if err != nil {
-			return nil, fmt.Errorf("decode %s from env %s: %w", humanLabel, envName, err)
+			return nil, false, fmt.Errorf("decode %s from env %s: %w", humanLabel, envName, err)
 		}
-		return v, nil
+		return v, true, nil
 	}
 	v, err := kvGet(ctx, st.Pool, kvKey)
 	if err == nil {
-		return v, nil
+		return v, false, nil
 	}
 	if !errors.Is(err, errKVMissing) {
-		return nil, fmt.Errorf("kv lookup %s: %w", humanLabel, err)
+		return nil, false, fmt.Errorf("kv lookup %s: %w", humanLabel, err)
 	}
 	fresh := make([]byte, 32)
 	if _, err := rand.Read(fresh); err != nil {
-		return nil, fmt.Errorf("generate %s: %w", humanLabel, err)
+		return nil, false, fmt.Errorf("generate %s: %w", humanLabel, err)
 	}
 	if err := kvSet(ctx, st.Pool, kvKey, fresh); err != nil {
-		return nil, fmt.Errorf("persist %s: %w", humanLabel, err)
+		return nil, false, fmt.Errorf("persist %s: %w", humanLabel, err)
 	}
 	logger.Info("generated "+humanLabel+" (one-time persistence)", "kv_key", kvKey)
-	return fresh, nil
+	return fresh, false, nil
 }
 
 var errKVMissing = errors.New("kv_store key missing")
@@ -343,12 +368,17 @@ func hashForAudit(s string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// PrintTokens dumps the persisted HMAC key (hex) + mint-authority token
-// (raw) to w. Used by the `agent-hub print-tokens` subcommand so the
+// PrintTokens dumps the persisted HMAC key + mint-authority token to w
+// as hex strings. Used by the `agent-hub print-tokens` subcommand so the
 // operator can retrieve secrets the gateway generated on first boot. If
 // the kv_store row is missing (no boot has happened yet, or the operator
 // set an env-var override that bypasses persistence) the corresponding
 // line reads "(set via env; not persisted)".
+//
+// v0.1.8: MINT_AUTHORITY_TOKEN is stored as hex (post-migration). For
+// safety on pre-migration databases (operator runs `print-tokens` against
+// a kv_store that hasn't been re-booted under v0.1.8 yet), we detect a
+// non-hex value and hex-encode on the fly for display.
 func PrintTokens(ctx context.Context, st *store.Store, w interface{ Write([]byte) (int, error) }) error {
 	hmacKey, hmacErr := kvGet(ctx, st.Pool, kvKeyJoinCodeHMAC)
 	mintAuth, mintErr := kvGet(ctx, st.Pool, kvKeyMintAuthority)
@@ -366,7 +396,14 @@ func PrintTokens(ctx context.Context, st *store.Store, w interface{ Write([]byte
 	}
 
 	if mintErr == nil {
-		writeLine("MINT_AUTHORITY_TOKEN:", string(mintAuth))
+		mintStr := string(mintAuth)
+		if _, derr := hex.DecodeString(mintStr); derr != nil || len(mintStr) != 64 {
+			// Legacy v0.1.7 row hasn't been migrated yet (gateway under
+			// this kv_store hasn't booted on v0.1.8). Render as hex so
+			// the operator sees a copy-pasteable value either way.
+			mintStr = hex.EncodeToString(mintAuth)
+		}
+		writeLine("MINT_AUTHORITY_TOKEN:", mintStr)
 	} else if errors.Is(mintErr, errKVMissing) {
 		writeLine("MINT_AUTHORITY_TOKEN:", "(set via env; not persisted, or gateway has not booted yet)")
 	} else {
