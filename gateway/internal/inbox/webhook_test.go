@@ -280,6 +280,76 @@ func TestWebhook_MultipleMentionsInsertOneRowEach(t *testing.T) {
 	}
 }
 
+// #45 — case-insensitive @-mention routing. All three spellings of the
+// alias resolve to the same agent.
+func TestWebhook_MentionResolutionIsCaseInsensitive(t *testing.T) {
+	pool := openWebhookTestPool(t)
+	agentID := seedAgent(t, pool, "agent-operator-mac", "Splinter")
+	h := newTestHandler(t, pool)
+
+	cases := []struct {
+		name    string
+		mention string
+	}{
+		{"lowercase", "@splinter"},
+		{"uppercase", "@SPLINTER"},
+		{"titlecase", "@Splinter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			postID := fmt.Sprintf("post-case-%s-%d", tc.name, time.Now().UnixNano())
+			w := formPost(t, h, map[string]string{
+				"token":   testWebhookSecret,
+				"post_id": postID,
+				"text":    "ping " + tc.mention + " can you take a look?",
+			})
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+			}
+			var n int
+			_ = pool.QueryRow(context.Background(),
+				`SELECT count(*) FROM mattermost_inbox WHERE source_post_id = $1`, postID,
+			).Scan(&n)
+			if n != 1 {
+				t.Fatalf("inbox rows for %s = %d, want 1 (case-insensitive resolve)", tc.mention, n)
+			}
+		})
+	}
+
+	// All three writes target the same agent row.
+	var total int
+	_ = pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM mattermost_inbox WHERE target_agent_id = $1`, agentID,
+	).Scan(&total)
+	if total != 3 {
+		t.Fatalf("total inbox rows for agent = %d, want 3", total)
+	}
+}
+
+// #45 — duplicate-cased mentions in the same message dedupe to one insert.
+func TestWebhook_DuplicateCasedMentionsDedupe(t *testing.T) {
+	pool := openWebhookTestPool(t)
+	agentID := seedAgent(t, pool, "agent-operator-mac", "Splinter")
+	h := newTestHandler(t, pool)
+
+	postID := fmt.Sprintf("post-dedupe-%d", time.Now().UnixNano())
+	w := formPost(t, h, map[string]string{
+		"token":   testWebhookSecret,
+		"post_id": postID,
+		"text":    "@Splinter and @SPLINTER and @splinter all you",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var n int
+	_ = pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM mattermost_inbox WHERE target_agent_id = $1`, agentID,
+	).Scan(&n)
+	if n != 1 {
+		t.Fatalf("inbox rows = %d, want 1 (case-insensitive dedupe within a single message)", n)
+	}
+}
+
 func TestWebhook_ReDeliveryIsIdempotent(t *testing.T) {
 	pool := openWebhookTestPool(t)
 	agentID := seedAgent(t, pool, "agent-1", "")

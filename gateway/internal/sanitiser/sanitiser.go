@@ -134,6 +134,78 @@ func (s *Sanitiser) Check(summary string, payload any) (*Match, error) {
 	return nil, nil
 }
 
+// mattermostStructuralFields lists payload field paths whose values are
+// known-safe structural identifiers from Mattermost (post ids, user ids,
+// channel ids, team ids, etc.). They are 26-char base32-alphabet strings
+// that frequently trip §2.1 patterns despite being content-free.
+//
+// IMPORTANT: this is a STRUCTURAL exemption, not a content one. The
+// sanitiser still scrutinises free-form fields (text, message) — even if a
+// substring inside that text happens to look like a Mattermost id, the
+// scrutiny stands. Only fields named in this set bypass pattern matching.
+//
+// Closes #46 (v0.1.7).
+var mattermostStructuralFields = map[string]bool{
+	"post_id":     true,
+	"user_id":     true,
+	"team_id":     true,
+	"channel_id":  true,
+	"file_ids":    true,
+	"root_id":     true,
+	"parent_id":   true,
+	"trigger_id":  true,
+}
+
+// CheckMattermost scans an MM webhook payload with structural-field
+// awareness. Unlike Check, it walks the payload as a map[string]any and
+// skips any field whose key is in mattermostStructuralFields. The summary +
+// free-form fields (text, message, props as a stringified blob) are still
+// scanned normally.
+//
+// Use this entry point in code paths that handle MM-shaped payloads (e.g.,
+// the inbox-webhook receiver or future MM-relay events) so structural ids
+// don't cause spurious sanitiser.blocked events. Callers handling generic
+// agent-emitted payloads should keep using Check.
+func (s *Sanitiser) CheckMattermost(summary string, payload map[string]any) (*Match, error) {
+	if s == nil || len(s.patterns) == 0 {
+		return nil, nil
+	}
+
+	if summary != "" {
+		if hit := s.scan(summary); hit != nil {
+			hit.MatchedField = "summary"
+			return hit, nil
+		}
+	}
+
+	if payload == nil {
+		return nil, nil
+	}
+
+	// Build a filtered shallow copy that drops known-safe structural fields.
+	// Field-name match is on the top-level key only — nested objects still
+	// get scrutinised in full, because deeply-nested keys are not part of
+	// MM's well-known structural set and could carry attacker-influenced
+	// content.
+	filtered := make(map[string]any, len(payload))
+	for k, v := range payload {
+		if mattermostStructuralFields[k] {
+			continue
+		}
+		filtered[k] = v
+	}
+
+	raw, err := json.Marshal(filtered)
+	if err != nil {
+		return nil, fmt.Errorf("marshal payload for mm scan: %w", err)
+	}
+	if hit := s.scan(string(raw)); hit != nil {
+		hit.MatchedField = "payload"
+		return hit, nil
+	}
+	return nil, nil
+}
+
 // scan finds the first non-exempt pattern match. A "match" is the
 // regex-extracted substring; if that substring contains any of the
 // configured exempt-hosts, the match is suppressed and we keep scanning the

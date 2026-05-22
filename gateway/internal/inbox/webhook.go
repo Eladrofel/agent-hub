@@ -271,8 +271,11 @@ func parseWebhookPayload(r *http.Request) (*webhookPayload, error) {
 }
 
 // extractMentions parses @-handles out of the message body. Returns the
-// list of unique handles in first-seen order (handles are case-sensitive
-// to match Mattermost's username casing; resolveAgent normalises further).
+// list of unique handles in first-seen order (case-PRESERVING — the original
+// spelling is kept for forensics/audit, while resolveAgent does
+// case-insensitive matching against agents.name and mattermost_username).
+// Dedupe is also case-insensitive so "@Splinter" and "@splinter" appearing
+// in the same message only enqueue once.
 func extractMentions(text string) []string {
 	if text == "" {
 		return nil
@@ -285,22 +288,27 @@ func extractMentions(text string) []string {
 	var out []string
 	for _, m := range matches {
 		h := m[1]
-		if !seen[h] {
-			seen[h] = true
-			out = append(out, h)
+		key := strings.ToLower(h)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, h) // preserve original case
 		}
 	}
 	return out
 }
 
-// resolveAgent maps a mention handle to an agents.id. First tries an exact
-// match on agents.name (e.g., "agent-1"); falls back to a match on
-// mattermost_username (e.g., "@Splinter" → agent-operator-mac). Returns
-// ("", false) if neither matches.
+// resolveAgent maps a mention handle to an agents.id. Case-INSENSITIVE: first
+// tries to match agents.name (e.g., "agent-1"), then falls back to
+// mattermost_username (e.g., "@Splinter" → agent-operator-mac). The lookup
+// uses LOWER(...) on both sides so "@SPLINTER" / "@splinter" / "@Splinter"
+// all resolve to the same row. Returns ("", false) if neither matches.
+//
+// Closes #45 (v0.1.7): operators were getting silently-dropped mentions
+// when case didn't match exactly.
 func (h *Handler) resolveAgent(ctx context.Context, handle string) (string, bool) {
 	var id string
 	err := h.pool.QueryRow(ctx,
-		`SELECT id FROM agents WHERE name = $1`, handle).Scan(&id)
+		`SELECT id FROM agents WHERE LOWER(name) = LOWER($1)`, handle).Scan(&id)
 	if err == nil {
 		return id, true
 	}
@@ -310,7 +318,7 @@ func (h *Handler) resolveAgent(ctx context.Context, handle string) (string, bool
 	}
 	// Try mattermost_username.
 	err = h.pool.QueryRow(ctx,
-		`SELECT id FROM agents WHERE mattermost_username = $1`, handle).Scan(&id)
+		`SELECT id FROM agents WHERE LOWER(mattermost_username) = LOWER($1)`, handle).Scan(&id)
 	if err == nil {
 		return id, true
 	}

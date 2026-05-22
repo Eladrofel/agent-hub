@@ -128,6 +128,89 @@ func TestLoad_EmptyExemptEntriesAreIgnored(t *testing.T) {
 	}
 }
 
+// #46 — Mattermost post_id field is a structural identifier and bypasses
+// pattern matching even if it happens to match a §2.1 regex.
+func TestCheckMattermost_StructuralFieldBypassesMatch(t *testing.T) {
+	// Pattern: any 26-char base32 sequence (mimics MM-id shape closely
+	// enough that the field's value would normally trip it).
+	path := writePatterns(t, `[a-z0-9]{26}\b`+"\n")
+	s, _ := Load(path, nil)
+
+	payload := map[string]any{
+		"post_id":    "abcdefghijklmnopqrstuvwxyz",
+		"channel_id": "1234567890abcdefghijklmnop",
+		"user_id":    "zyxwvutsrqponmlkjihgfedcba",
+		"text":       "clean message body",
+	}
+	m, err := s.CheckMattermost("clean summary", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m != nil {
+		t.Fatalf("expected no match (MM ids in structural fields), got %+v", m)
+	}
+}
+
+// #46 — Free-form text field still gets full scrutiny; a real PII-shaped
+// match in the text IS redacted.
+func TestCheckMattermost_FreeFormFieldStillScrutinised(t *testing.T) {
+	path := writePatterns(t, `\b10\.\d+\.\d+\.\d+\b`+"\n")
+	s, _ := Load(path, nil)
+
+	payload := map[string]any{
+		"post_id": "abcdefghijklmnopqrstuvwxyz",
+		"text":    "the box at 10.0.5.50 is rebooting",
+	}
+	m, err := s.CheckMattermost("", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m == nil {
+		t.Fatal("expected match on free-form text field, got nil")
+	}
+	if m.MatchedField != "payload" {
+		t.Fatalf("matched_field = %q, want payload", m.MatchedField)
+	}
+}
+
+// #46 — A string that LOOKS like an MM id but is embedded inside the
+// free-form `text` field still gets scrutinised. The exemption is
+// field-name-based and MUST NOT be triggered by content shape.
+func TestCheckMattermost_MMIDShapeInsideTextStillScrutinised(t *testing.T) {
+	path := writePatterns(t, `[a-z0-9]{26}\b`+"\n")
+	s, _ := Load(path, nil)
+
+	payload := map[string]any{
+		"post_id": "abcdefghijklmnopqrstuvwxyz",
+		"text":    "look up post abcdefghijklmnopqrstuvwxyz it's relevant",
+	}
+	m, err := s.CheckMattermost("", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m == nil {
+		t.Fatal("expected match: MM-id-shape inside text field is not field-exempt")
+	}
+}
+
+// #46 — The generic Check entry point still scrutinises EVERY field; the
+// MM-aware bypass is opt-in via CheckMattermost only.
+func TestCheck_DoesNotBypassStructuralFields(t *testing.T) {
+	path := writePatterns(t, `[a-z0-9]{26}\b`+"\n")
+	s, _ := Load(path, nil)
+
+	payload := map[string]any{
+		"post_id": "abcdefghijklmnopqrstuvwxyz",
+	}
+	m, err := s.Check("", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m == nil {
+		t.Fatal("Check (generic) must NOT bypass — MM bypass is opt-in via CheckMattermost")
+	}
+}
+
 // If a pattern produces multiple matches and only some are exempt, the
 // non-exempt match still fires the sanitiser.
 func TestCheck_MixedExemptAndNonExemptFires(t *testing.T) {

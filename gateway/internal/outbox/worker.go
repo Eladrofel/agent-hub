@@ -1,5 +1,25 @@
 // Worker loop for the mattermost_outbox table.
 //
+// # sanitiser.blocked relay — design memo
+//
+// When POST /v1/events trips the §2.1 sanitiser, the gateway STILL records a
+// durable audit row in `events` (event_type = "sanitiser.blocked", payload =
+// metadata only — never the offending content) and enqueues a curated
+// outbox row so the operator sees the hit in Mattermost too. The outbox
+// row's `message` is a redacted placeholder describing the original
+// event_type + matched pattern; the offending text never reaches MM.
+//
+// This is INTENTIONAL: the events plane is the durable record (immutable,
+// queryable, audit-grade), and Mattermost is a curated surface (filtered,
+// human-friendly). A sanitiser hit must remain visible on BOTH planes so
+// the operator can react without forensics requiring DB access — but the
+// content that tripped the filter is excluded from both planes.
+//
+// If you find yourself "fixing" the outbox-worker to drop sanitiser.blocked
+// rows: don't. See CHANGELOG v0.1.4 + design memo on events-plane-as-
+// durable-record + the feedback_outbox-worker-curated-allowlist note. The
+// redacted placeholder is the point.
+//
 // Polls pending rows on a ticker; for each row resolves the channel name to
 // a Mattermost channel id (cached in-process), POSTs to /api/v4/posts, then
 // transitions the row by HTTP-class:
