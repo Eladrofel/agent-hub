@@ -260,6 +260,141 @@ func TestIntegration_InboxPoll(t *testing.T) {
 	_ = env
 }
 
+// TestIntegration_Join exercises agentctl join end-to-end against a live
+// gateway container (Postgres + chi router + auth middleware). Uses the
+// admin-token-as-bootstrap path (v0.3.0 default; the signed-join-code path
+// is deferred to v0.4.0).
+//
+// The test stands up an isolated fixture so it doesn't share state with
+// the other integration tests (per follow-up #27). Skips when
+// AGENT_HUB_TEST_DATABASE_URL is unset.
+func TestIntegration_Join(t *testing.T) {
+	dsn := os.Getenv("AGENT_HUB_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AGENT_HUB_TEST_DATABASE_URL not set; skipping join integration test")
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// Isolate: truncate every table the join flow may touch.
+	for _, tbl := range []string{
+		"events", "session_checkpoints", "agent_sessions",
+		"mattermost_inbox", "mattermost_outbox", "agents", "projects",
+	} {
+		if _, err := st.Pool.Exec(ctx, "TRUNCATE TABLE "+tbl+" CASCADE"); err != nil {
+			t.Fatalf("truncate %s: %v", tbl, err)
+		}
+	}
+	// Seed the project the smoke flow uses.
+	_, err = st.Pool.Exec(ctx,
+		`INSERT INTO projects (slug, name) VALUES ('int-join-project', 'int') ON CONFLICT (slug) DO NOTHING`)
+	if err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	patternsFile := filepath.Join(t.TempDir(), "patterns.txt")
+	if err := os.WriteFile(patternsFile, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	san, err := sanitiser.Load(patternsFile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminTok := "int-admin-bearer-for-join"
+	mw := &auth.Middleware{Pool: st.Pool, AdminToken: adminTok}
+	app := &server.App{
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:     st,
+		Sanitiser: san,
+		Auth:      mw,
+	}
+	router := server.NewRouter(app, nil)
+	httpSrv := httptest.NewServer(router)
+	t.Cleanup(httpSrv.Close)
+
+	// HOME isolation so we don't write into the developer's real config.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(config.EnvURL, httpSrv.URL)
+	t.Setenv(config.EnvAuditLog, filepath.Join(home, "audit.log"))
+	t.Setenv("AGENT_HUB_ADMIN_TOKEN_FOR_JOIN", adminTok)
+
+	f := newCapFixture(t)
+	err = f.run(NewJoinCmd(),
+		"--name", "agent-int-join",
+		"--alias", "Donatello",
+		"--role", "frontend",
+		"--project-slug", "int-join-project",
+		"--bootstrap-token", "env:AGENT_HUB_ADMIN_TOKEN_FOR_JOIN",
+		"--smoke",
+	)
+	if err != nil {
+		t.Fatalf("join: %v stderr=%s", err, f.stderr.String())
+	}
+
+	// Verify token file landed chmod 600.
+	tokPath := filepath.Join(home, ".config", "concept-workflow", "agent-hub-token")
+	info, err := os.Stat(tokPath)
+	if err != nil {
+		t.Fatalf("stat token file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("token file should be chmod 600; got %o", info.Mode().Perm())
+	}
+
+	// Verify the agent row exists with the alias.
+	var alias string
+	err = st.Pool.QueryRow(ctx,
+		`SELECT mattermost_username FROM agents WHERE name = $1`, "agent-int-join").Scan(&alias)
+	if err != nil {
+		t.Fatalf("select agent: %v", err)
+	}
+	if alias != "Donatello" {
+		t.Fatalf("alias not stored: %q", alias)
+	}
+
+	// Verify the smoke round-trip wrote a session row + event.
+	var sessCount int
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM agent_sessions WHERE claude_session_id LIKE 'setup-smoke-agent-int-join-%'`).Scan(&sessCount); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if sessCount != 1 {
+		t.Fatalf("expected 1 smoke session; got %d", sessCount)
+	}
+	var evtCount int
+	if err := st.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM events WHERE event_type = 'test.smoke'`).Scan(&evtCount); err != nil {
+		t.Fatalf("count smoke events: %v", err)
+	}
+	if evtCount != 1 {
+		t.Fatalf("expected 1 test.smoke event; got %d", evtCount)
+	}
+
+	// Re-run with same args (no --rotate). Mint should NOT be called again
+	// because the token file is already chmod 600.
+	f2 := newCapFixture(t)
+	err = f2.run(NewJoinCmd(),
+		"--name", "agent-int-join",
+		"--alias", "Donatello",
+		"--role", "frontend",
+		"--project-slug", "int-join-project",
+		"--bootstrap-token", "env:AGENT_HUB_ADMIN_TOKEN_FOR_JOIN",
+	)
+	if err != nil {
+		t.Fatalf("join re-run: %v stderr=%s", err, f2.stderr.String())
+	}
+	if !strings.Contains(f2.stderr.String(), "token already present") {
+		t.Fatalf("re-run stderr should announce idempotent skip: %q", f2.stderr.String())
+	}
+}
+
 func TestIntegration_ProjectRegister(t *testing.T) {
 	env := newIntEnv(t)
 	f := newCapFixture(t)
