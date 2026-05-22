@@ -41,6 +41,9 @@ services:
       - "8787:8787"
     volumes:
       - ./gateway/sanitiser-patterns.txt:/etc/agent-hub/sanitiser-patterns.txt:ro
+      # v0.1.7: serve agentctl-{linux-amd64,darwin-arm64} via GET /dist/*.
+      # Operator deploys binaries here via Makefile cross-build + scp.
+      - ./dist:/opt/agent-hub/dist:ro
     depends_on:
       postgres:
         condition: service_healthy
