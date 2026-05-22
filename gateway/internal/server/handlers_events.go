@@ -128,12 +128,19 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Per-event-type curated formatter. For most curated types we let
+	// events.InsertWithOutbox compose the default "[event_type] summary"
+	// message; v0.1.9 added agent.improvement-note which gets a dedicated
+	// "💡 <alias>: <summary>" shape so operators can pick learnings out of
+	// the lifecycle stream at a glance.
+	outboxMessage := formatCuratedMessage(req.EventType, agent, req.Summary, req.Payload)
+
 	id, err := events.InsertWithOutbox(r.Context(), a.Store.Pool, params,
 		events.OutboxConfig{
 			ProjectChannel: projectChannel,
 			DefaultChannel: a.MattermostDefaultOutbox,
 		},
-		"", // let events.InsertWithOutbox compose a default message
+		outboxMessage,
 	)
 	if err != nil {
 		a.Logger.Error("insert event failed", "err", err)

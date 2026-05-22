@@ -25,17 +25,18 @@ import (
 // the gateway writes the outbox row unconditionally for any curated type so
 // the worker has the data to make that call.
 var CuratedEventTypes = map[string]bool{
-	"task.created":      true,
-	"task.claimed":      true,
-	"task.blocked":      true,
-	"task.unblocked":    true,
-	"task.completed":    true,
-	"decision.proposed": true,
-	"decision.accepted": true,
-	"decision.rejected": true,
-	"handoff.created":   true,
-	"session.ended":     true,
-	"sanitiser.blocked": true,
+	"task.created":           true,
+	"task.claimed":           true,
+	"task.blocked":           true,
+	"task.unblocked":         true,
+	"task.completed":         true,
+	"decision.proposed":      true,
+	"decision.accepted":      true,
+	"decision.rejected":      true,
+	"handoff.created":        true,
+	"session.ended":          true,
+	"sanitiser.blocked":      true,
+	"agent.improvement-note": true, // v0.1.9 — captured learnings relayed to MM with 💡 prefix
 }
 
 // IsCurated reports whether an event_type should be mirrored to Mattermost.

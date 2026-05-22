@@ -438,5 +438,57 @@ func TestEventEmit_CuratedType_NoDefaultChannelSkipsOutbox(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// v0.1.9 — agent.improvement-note is curated + uses the dedicated formatter
+// =============================================================================
+
+func TestEventEmit_ImprovementNote_FormattedMessageHitsOutbox(t *testing.T) {
+	env := newTestEnv(t, "")
+	env.app.MattermostDefaultOutbox = "agent-events"
+
+	// Give the seeded agent an alias so the formatter shows "Splinter:" not
+	// the canonical agent name. Loaded into auth context via the existing
+	// agents.mattermost_username column.
+	_, err := env.store.Pool.Exec(env.ctx,
+		`UPDATE agents SET mattermost_username = 'Splinter' WHERE id = $1`, env.agentID)
+	if err != nil {
+		t.Fatalf("set alias: %v", err)
+	}
+
+	w := env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type": "agent.improvement-note",
+		"summary":    "bot-to-bot relay needs config toggle",
+		"payload": map[string]any{
+			"category":         "process",
+			"summary":          "bot-to-bot relay needs config toggle",
+			"propagation_hint": "mm",
+			"context":          "v0.1.7 smoke",
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+	var resp eventEmitResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+
+	var (
+		outboxCount int
+		outboxMsg   string
+	)
+	err = env.store.Pool.QueryRow(env.ctx,
+		`SELECT count(*), max(message) FROM mattermost_outbox WHERE event_id = $1`,
+		resp.EventID).Scan(&outboxCount, &outboxMsg)
+	if err != nil {
+		t.Fatalf("scan outbox: %v", err)
+	}
+	if outboxCount != 1 {
+		t.Fatalf("improvement-note should produce 1 outbox row; got %d", outboxCount)
+	}
+	want := "\xf0\x9f\x92\xa1 Splinter: bot-to-bot relay needs config toggle _(v0.1.7 smoke)_"
+	if outboxMsg != want {
+		t.Fatalf("outbox message\n got  %q\n want %q", outboxMsg, want)
+	}
+}
+
 // silence unused-import warning when test-only constants drop out
 var _ = fmt.Sprintf

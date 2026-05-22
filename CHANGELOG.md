@@ -2,6 +2,93 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.9] — 2026-05-23
+
+First-class support for **captured learnings** as fleet data. Dale's
+2026-05-23 directive: what an agent figures out, gets surprised by, or thinks
+should change is durable + queryable + optionally chat-visible, and
+explicitly **outside source control**. v0.1.9 implements the agent-hub side
+(new curated event_type + agentctl subcommand + outbox formatter); the
+`concept-workflow` plugin ships the matching `/note-improvement` skill in
+its own release.
+
+### Gateway — new curated event_type
+
+- **`agent.improvement-note`** added to `events.CuratedEventTypes`. The
+  events table is JSONB-payload so no migration is required; the new type
+  flows through the existing `InsertWithOutbox` path and lands a
+  `mattermost_outbox` row alongside the durable `events` row, same as
+  `task.created` / `session.ended` / etc. Payload shape:
+  ```json
+  {
+    "category":         "process",   // architectural|process|tooling|domain|other
+    "summary":          "...",       // ≤ 280 chars (CLI-enforced)
+    "context":          "feat-04-x", // optional, e.g. work-item key
+    "propagation_hint": "mm",        // none|mm|fleet  (fleet treated as mm in v0.1.9)
+    "details":          "..."        // optional longer body (no length cap)
+  }
+  ```
+  `propagation_hint=none` still emits a durable event row (every curated type
+  always does) but signals the outbox-worker / future filters that the
+  operator does NOT want it surfaced in chat. The hint is honoured at the
+  filter layer, not the enqueue layer, so the per-event-type message is
+  always materialised on the row for queryability.
+
+### Gateway — per-event-type outbox formatter
+
+- New `handlers_events_format.go::formatCuratedMessage` hook on the
+  `POST /v1/events` enqueue path. Returns `""` for every event_type EXCEPT
+  `agent.improvement-note` — for which it composes
+  `💡 <alias>: <summary> _(<context>)_`. The empty-string contract lets
+  `events.InsertWithOutbox` keep its default `"[event_type] summary"`
+  composition for every other curated type (no regression). Alias falls
+  back to the canonical agent name when unset, matching the v0.1.8
+  lifecycle-summary rule. Sanitiser runs upstream of the formatter — no
+  bypass.
+
+### agentctl — new subcommand
+
+- **`agentctl improvement emit`** wraps `POST /v1/events` with
+  `event_type=agent.improvement-note`. Flags lock the cross-track contract
+  with the plugin's `/note-improvement` skill:
+  ```
+  agentctl improvement emit \
+    --category <architectural|process|tooling|domain|other> \
+    --summary <text>                  # required, ≤ 280 chars
+    --context <wi-key|free-text>      # optional
+    --propagation <none|mm|fleet>     # default: none
+    --details <text-or-@file>         # optional; @file reads from path
+    [--strict]
+  ```
+  Constructs the payload + routes through the existing `runCall` / auditor
+  / strict-mode plumbing — no duplicated wire/auth. Stdout success line:
+  `improvement-note emitted (category=<c>, propagation=<p>, event_id=<uuid>)`.
+  Sanitiser-blocked responses surface `matched_pattern` + `matched_field` +
+  `blocked_event_id` the same way `event emit` does.
+
+### Version
+
+- `agent-hub` binary version: `0.1.8` → `0.1.9`.
+- `agentctl` binary version: `0.1.6` → `0.1.9` (aligning the CLI with the
+  gateway release line; both binaries ship from the same module).
+
+### Tests
+
+- 12 new pure-unit tests on the `agentctl improvement emit` subcommand:
+  payload shape, default propagation, category enum (missing + invalid),
+  propagation enum, empty summary, oversized summary (best-effort +
+  strict), `@file` details (happy + missing path), 5xx best-effort +
+  strict, sanitiser-blocked pattern surfacing.
+- 8 new pure-unit tests on `formatCuratedMessage`: non-improvement returns
+  empty (regression guard for the existing curated types), alias preferred
+  over name, alias fallback when unset, context italicised, whitespace-only
+  context omitted, details NOT inlined (v0.1.9 contract), nil-agent
+  defensive fallback, summary whitespace trimmed.
+- 1 new server integration test: improvement-note routes through to the
+  outbox with the exact formatted message (`💡 Splinter: ... _(ctx)_`).
+
+`go build ./...`, `go vet ./...`, `go test ./...` all clean.
+
 ## [0.1.8] — 2026-05-22
 
 Three targeted bug fixes from the live-fleet smoke run that landed immediately

@@ -8,6 +8,7 @@
 //	agentctl session-start --claude-session-id <id> [...]
 //	agentctl session-end --claude-session-id <id>
 //	agentctl event emit --type <type> --summary <s> [--json-payload <payload>]
+//	agentctl improvement emit --category <c> --summary <s> [--context <c>] [--propagation <p>] [--details <text-or-@file>]
 //	agentctl checkpoint --claude-session-id <id> --summary <s> [--next <n>...]
 //	agentctl resume-context [--claude-session-id <id>]
 //	agentctl inbox poll [--since <ts>]
@@ -41,7 +42,7 @@ import (
 var (
 	// agentctl wire-up to the gateway endpoints ships in v0.1.0; the binary
 	// version tracks the agent-hub release line.
-	version = "0.1.6"
+	version = "0.1.9"
 	commit  = "unknown"
 )
 
@@ -69,6 +70,7 @@ func main() {
 	root.AddCommand(commands.NewProjectCmd())
 	root.AddCommand(commands.NewJoinCmd())
 	root.AddCommand(commands.NewCommsJoinCmd())
+	root.AddCommand(commands.NewImprovementCmd())
 
 	if err := root.Execute(); err != nil {
 		// Silent errors are the best-effort marker; treat as success.
