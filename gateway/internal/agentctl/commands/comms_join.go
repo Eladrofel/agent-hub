@@ -169,6 +169,16 @@ Backends:
 					}
 					return nil
 				}
+				// Bug #49: bot must be a team member before the channel-add
+				// call; on a fresh team the channel-add returns 403
+				// user_not_in_team. Idempotent — no-op on re-runs.
+				if terr := backend.EnsureTeamMember(admin, botID); terr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "agentctl comms-join: ensure team member: %v\n", terr)
+					if strictFlag(cmd) {
+						return terr
+					}
+					return nil
+				}
 				if cerr := backend.AddBotToChannel(admin, botID, channel); cerr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "agentctl comms-join: add bot to channel: %v\n", cerr)
 					if strictFlag(cmd) {

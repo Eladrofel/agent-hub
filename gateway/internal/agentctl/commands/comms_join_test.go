@@ -19,22 +19,26 @@ type fakeBackend struct {
 	mu             sync.Mutex
 	validateCalls  int
 	ensureCalls    int
+	teamMemberCalls int
 	addToChCalls   int
 	mintCalls      int
 	validateErr    error
 	ensureErr      error
+	teamMemberErr  error
 	addErr         error
 	mintErr        error
 	lastBotName    string
 	lastChannel    string
 	lastBotID      string
 	mintedPAT      string
+	callOrder      []string
 }
 
 func (b *fakeBackend) Validate(_ string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.validateCalls++
+	b.callOrder = append(b.callOrder, "validate")
 	return b.validateErr
 }
 
@@ -42,6 +46,7 @@ func (b *fakeBackend) EnsureBotUser(_ string, name string) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.ensureCalls++
+	b.callOrder = append(b.callOrder, "ensure-bot")
 	b.lastBotName = name
 	if b.ensureErr != nil {
 		return "", b.ensureErr
@@ -49,10 +54,20 @@ func (b *fakeBackend) EnsureBotUser(_ string, name string) (string, error) {
 	return "bot-id-xyz", nil
 }
 
+func (b *fakeBackend) EnsureTeamMember(_ string, botID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.teamMemberCalls++
+	b.callOrder = append(b.callOrder, "ensure-team-member")
+	b.lastBotID = botID
+	return b.teamMemberErr
+}
+
 func (b *fakeBackend) AddBotToChannel(_, botID, channel string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.addToChCalls++
+	b.callOrder = append(b.callOrder, "add-to-channel")
 	b.lastBotID = botID
 	b.lastChannel = channel
 	return b.addErr
@@ -163,9 +178,9 @@ func TestCommsJoin_Mattermost_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v stderr=%s", err, f.stderr.String())
 	}
-	if fb.validateCalls != 1 || fb.ensureCalls != 1 || fb.addToChCalls != 1 || fb.mintCalls != 1 {
-		t.Fatalf("call counts: validate=%d ensure=%d add=%d mint=%d",
-			fb.validateCalls, fb.ensureCalls, fb.addToChCalls, fb.mintCalls)
+	if fb.validateCalls != 1 || fb.ensureCalls != 1 || fb.teamMemberCalls != 1 || fb.addToChCalls != 1 || fb.mintCalls != 1 {
+		t.Fatalf("call counts: validate=%d ensure=%d team=%d add=%d mint=%d",
+			fb.validateCalls, fb.ensureCalls, fb.teamMemberCalls, fb.addToChCalls, fb.mintCalls)
 	}
 	// PAT was written chmod 600.
 	home := os.Getenv("HOME")
@@ -343,5 +358,73 @@ func TestCommsJoin_ValidateError_Strict(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("strict mode should propagate")
+	}
+}
+
+// =============================================================================
+// bug #49 — team-add must precede channel-add
+// =============================================================================
+
+func TestCommsJoin_EnsureTeamMemberBeforeChannelAdd(t *testing.T) {
+	// Bug #49: on a fresh Mattermost team the bot account is not yet a team
+	// member, so AddBotToChannel returns 403 user_not_in_team. comms-join
+	// must call EnsureTeamMember between EnsureBotUser and AddBotToChannel.
+	f := newCommsFixture(t)
+	fb := &fakeBackend{}
+	withFakeBackend(t, fb)
+	t.Setenv("MM_ADMIN_TOK", "admin-bearer")
+
+	err := f.run(NewCommsJoinCmd(),
+		"--backend", "mattermost",
+		"--bootstrap-pat", "env:MM_ADMIN_TOK",
+	)
+	if err != nil {
+		t.Fatalf("run: %v stderr=%s", err, f.stderr.String())
+	}
+	if fb.teamMemberCalls != 1 {
+		t.Fatalf("EnsureTeamMember should be called exactly once; got %d", fb.teamMemberCalls)
+	}
+	// Locate the relative ordering inside callOrder.
+	idxEnsureBot, idxTeamMember, idxAddCh := -1, -1, -1
+	for i, c := range fb.callOrder {
+		switch c {
+		case "ensure-bot":
+			idxEnsureBot = i
+		case "ensure-team-member":
+			idxTeamMember = i
+		case "add-to-channel":
+			idxAddCh = i
+		}
+	}
+	if idxEnsureBot < 0 || idxTeamMember < 0 || idxAddCh < 0 {
+		t.Fatalf("call order missing entries: %v", fb.callOrder)
+	}
+	if !(idxEnsureBot < idxTeamMember && idxTeamMember < idxAddCh) {
+		t.Fatalf(
+			"call order must be ensure-bot → ensure-team-member → add-to-channel; got %v",
+			fb.callOrder,
+		)
+	}
+}
+
+func TestCommsJoin_TeamMemberError_BestEffort(t *testing.T) {
+	f := newCommsFixture(t)
+	fb := &fakeBackend{teamMemberErr: fmt.Errorf("HTTP 403")}
+	withFakeBackend(t, fb)
+	t.Setenv("MM_ADMIN_TOK", "admin-bearer")
+
+	err := f.run(NewCommsJoinCmd(),
+		"--backend", "mattermost",
+		"--bootstrap-pat", "env:MM_ADMIN_TOK",
+	)
+	if err != nil {
+		t.Fatalf("best-effort: should exit 0, got %v", err)
+	}
+	if !strings.Contains(f.stderr.String(), "ensure team member") {
+		t.Fatalf("stderr should mention failing step: %q", f.stderr.String())
+	}
+	// And AddBotToChannel must NOT have been called (we halt at team-add).
+	if fb.addToChCalls != 0 {
+		t.Fatalf("AddBotToChannel should be skipped after team-add fails; got %d calls", fb.addToChCalls)
 	}
 }

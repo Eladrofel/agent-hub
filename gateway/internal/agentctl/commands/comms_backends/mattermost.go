@@ -30,22 +30,98 @@ type Mattermost struct {
 
 // NewMattermost reads CONCEPT_CHAT_MM_URL + MATTERMOST_TEAM_NAME +
 // MATTERMOST_TLS_SKIP_VERIFY from the environment and returns a configured
-// Mattermost backend. Returns an error if the required vars are missing.
+// Mattermost backend. Returns an error if CONCEPT_CHAT_MM_URL is missing.
+//
+// Bug #50: MATTERMOST_TEAM_NAME is now optional. If unset, the backend will
+// auto-derive it on first admin call by listing the operator's teams via
+// GET /api/v4/teams (admin scope): if exactly one team is visible, use it;
+// otherwise error out with a listing for the operator to pick from.
 func NewMattermost() (*Mattermost, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CONCEPT_CHAT_MM_URL")), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("env CONCEPT_CHAT_MM_URL is required")
 	}
 	team := strings.TrimSpace(os.Getenv("MATTERMOST_TEAM_NAME"))
-	if team == "" {
-		return nil, fmt.Errorf("env MATTERMOST_TEAM_NAME is required")
-	}
 	skip := strings.EqualFold(strings.TrimSpace(os.Getenv("MATTERMOST_TLS_SKIP_VERIFY")), "true")
 	return &Mattermost{
 		BaseURL:       baseURL,
-		TeamName:      team,
+		TeamName:      team, // may be empty; resolved on first admin call
 		SkipTLSVerify: skip,
 	}, nil
+}
+
+// resolveTeamName populates m.TeamName from the admin teams API when it was
+// left empty in NewMattermost. Caches the result on the receiver so repeated
+// callers (Validate → EnsureTeamMember → AddBotToChannel) share one lookup.
+// Returns the auto-derived name (and stores it on the receiver) or an error
+// describing how to disambiguate.
+func (m *Mattermost) resolveTeamName(adminToken string) (string, error) {
+	if m.TeamName != "" {
+		return m.TeamName, nil
+	}
+	status, body, err := m.do("GET", "/api/v4/teams?page=0&per_page=200", adminToken, nil)
+	if err != nil {
+		return "", fmt.Errorf("list teams: %w", err)
+	}
+	if status < 200 || status >= 300 {
+		return "", fmt.Errorf("list teams HTTP %d: %s", status, string(body))
+	}
+	var teams []struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.Unmarshal(body, &teams); err != nil {
+		return "", fmt.Errorf("decode teams list: %w; body=%s", err, string(body))
+	}
+	switch len(teams) {
+	case 0:
+		return "", fmt.Errorf(
+			"MATTERMOST_TEAM_NAME unset and the admin PAT can see no teams; " +
+				"create a team in Mattermost or set MATTERMOST_TEAM_NAME explicitly",
+		)
+	case 1:
+		m.TeamName = teams[0].Name
+		fmt.Fprintf(os.Stderr, "comms-join: auto-derived MATTERMOST_TEAM_NAME=%s\n", m.TeamName)
+		return m.TeamName, nil
+	default:
+		names := make([]string, 0, len(teams))
+		for _, t := range teams {
+			names = append(names, fmt.Sprintf("%s (%s)", t.Name, t.DisplayName))
+		}
+		return "", fmt.Errorf(
+			"MATTERMOST_TEAM_NAME unset and the admin PAT can see multiple teams; "+
+				"set MATTERMOST_TEAM_NAME to one of: %s",
+			strings.Join(names, ", "),
+		)
+	}
+}
+
+// teamID returns the resolved team's id, calling resolveTeamName first if the
+// team name was auto-derived. Centralises the team-lookup so AddBotToChannel
+// and EnsureTeamMember share one round-trip-per-process.
+func (m *Mattermost) teamID(adminToken string) (string, error) {
+	name, err := m.resolveTeamName(adminToken)
+	if err != nil {
+		return "", err
+	}
+	status, body, err := m.do("GET", "/api/v4/teams/name/"+url.PathEscape(name), adminToken, nil)
+	if err != nil {
+		return "", fmt.Errorf("lookup team: %w", err)
+	}
+	if status < 200 || status >= 300 {
+		return "", fmt.Errorf("lookup team %s HTTP %d: %s", name, status, string(body))
+	}
+	var t struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &t); err != nil {
+		return "", fmt.Errorf("decode team lookup: %w; body=%s", err, string(body))
+	}
+	if t.ID == "" {
+		return "", fmt.Errorf("team lookup returned empty id; body=%s", string(body))
+	}
+	return t.ID, nil
 }
 
 // httpClient returns an http.Client honouring SkipTLSVerify.
@@ -147,26 +223,43 @@ func (m *Mattermost) EnsureBotUser(adminToken, name string) (string, error) {
 	return b.UserID, nil
 }
 
-// AddBotToChannel resolves the channel by name within m.TeamName, then POSTs
-// the bot to the members endpoint. Treats "already a member" as success.
-func (m *Mattermost) AddBotToChannel(adminToken, botID, channel string) error {
-	// Resolve team -> id.
-	status, body, err := m.do("GET", "/api/v4/teams/name/"+url.PathEscape(m.TeamName), adminToken, nil)
+// EnsureTeamMember adds botID to the resolved team if it is not already a
+// member. Fixes bug #49: on a fresh team where the bot account hasn't been
+// added yet, AddBotToChannel fails with 403 user_not_in_team. Idempotent —
+// treats "already a member" as success.
+func (m *Mattermost) EnsureTeamMember(adminToken, botID string) error {
+	teamID, err := m.teamID(adminToken)
 	if err != nil {
-		return fmt.Errorf("lookup team: %w", err)
+		return err
 	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("lookup team %s HTTP %d: %s", m.TeamName, status, string(body))
+	status, body, err := m.do("POST", "/api/v4/teams/"+teamID+"/members", adminToken,
+		map[string]any{"team_id": teamID, "user_id": botID})
+	if err != nil {
+		return fmt.Errorf("add team member: %w", err)
 	}
-	var t struct {
-		ID string `json:"id"`
+	if status >= 200 && status < 300 {
+		return nil
 	}
-	if err := json.Unmarshal(body, &t); err != nil {
-		return fmt.Errorf("decode team lookup: %w; body=%s", err, string(body))
+	// Mattermost returns 4xx with "already" in the body when re-adding an
+	// existing member; treat as success for idempotency.
+	if status >= 400 && status < 500 && bytes.Contains(bytes.ToLower(body), []byte("already")) {
+		return nil
+	}
+	return fmt.Errorf("add team member HTTP %d: %s", status, string(body))
+}
+
+// AddBotToChannel resolves the channel by name within the configured team,
+// then POSTs the bot to the members endpoint. Treats "already a member" as
+// success. Callers MUST invoke EnsureTeamMember first (see bug #49) — on a
+// fresh team where the bot is not yet a team member, this call returns 403.
+func (m *Mattermost) AddBotToChannel(adminToken, botID, channel string) error {
+	teamID, err := m.teamID(adminToken)
+	if err != nil {
+		return err
 	}
 
 	// Resolve channel -> id.
-	status, body, err = m.do("GET", "/api/v4/teams/"+t.ID+"/channels/name/"+url.PathEscape(channel), adminToken, nil)
+	status, body, err := m.do("GET", "/api/v4/teams/"+teamID+"/channels/name/"+url.PathEscape(channel), adminToken, nil)
 	if err != nil {
 		return fmt.Errorf("lookup channel: %w", err)
 	}

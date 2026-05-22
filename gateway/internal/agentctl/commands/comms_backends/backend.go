@@ -21,6 +21,13 @@ type Backend interface {
 	// id either way. Idempotent.
 	EnsureBotUser(adminToken, name string) (botID string, err error)
 
+	// EnsureTeamMember adds the bot to the backend's team/workspace if it
+	// is not already a member. Idempotent — returning nil when already a
+	// member. Bug #49: must be called before AddBotToChannel; on a fresh
+	// Mattermost team the bot is not yet a team member and the
+	// channel-add will fail with 403 user_not_in_team.
+	EnsureTeamMember(adminToken, botID string) error
+
 	// AddBotToChannel joins the bot to the named channel. Idempotent —
 	// returning nil when already a member.
 	AddBotToChannel(adminToken, botID, channel string) error

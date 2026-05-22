@@ -42,13 +42,15 @@ import (
 // All paths are best-effort: only --strict will exit 1 on any single step.
 func NewJoinCmd() *cobra.Command {
 	var (
-		name            string
-		alias           string
-		role            string
-		projectSlug     string
-		bootstrapToken  string
-		smoke           bool
-		rotate          bool
+		name           string
+		alias          string
+		role           string
+		projectSlug    string
+		bootstrapToken string
+		gatewayURL     string
+		joinCode       string
+		smoke          bool
+		rotate         bool
 	)
 
 	cmd := &cobra.Command{
@@ -64,6 +66,14 @@ round-trip.
 
 Idempotent: re-running is a no-op unless --rotate is passed.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Apply --gateway-url precedence BEFORE config.Load (bug #40):
+			//   --gateway-url flag > AGENT_HUB_URL env > config-file (n/a here).
+			// When the flag is set we export it back into the process env so
+			// the downstream env-file write + config.Load all see the same URL.
+			if strings.TrimSpace(gatewayURL) != "" {
+				os.Setenv(config.EnvURL, strings.TrimSpace(gatewayURL))
+			}
+
 			// agent-events.env is loaded by the operator-side caller; we
 			// only need the URL for the mint call and the post-mint env
 			// vars we'll set in-process below. We deliberately do NOT
@@ -78,6 +88,12 @@ Idempotent: re-running is a no-op unless --rotate is passed.`,
 				return nil
 			}
 			auditor := audit.New(cfg.AuditLog)
+
+			// --code: signed-join-code redeem path. Mutually exclusive with
+			// --bootstrap-token; takes precedence when both are set.
+			if strings.TrimSpace(joinCode) != "" {
+				return runJoinViaCode(cmd, cfg, auditor, joinCode, alias, role)
+			}
 
 			// --name default: agent-operator-mac on Darwin, required elsewhere.
 			if name == "" {
@@ -263,6 +279,8 @@ Idempotent: re-running is a no-op unless --rotate is passed.`,
 	cmd.Flags().StringVar(&role, "role", "", "agent role (defaults to 'frontend')")
 	cmd.Flags().StringVar(&projectSlug, "project-slug", "", "project slug (required; defaults to AGENT_PROJECT_SLUG)")
 	cmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "admin token: path to chmod-600 file or 'env:VARNAME'")
+	cmd.Flags().StringVar(&gatewayURL, "gateway-url", "", "gateway base URL (overrides AGENT_HUB_URL; persisted to agent-events.env)")
+	cmd.Flags().StringVar(&joinCode, "code", "", "signed join-code from `agentctl join-code mint` (mutually exclusive with --bootstrap-token)")
 	cmd.Flags().BoolVar(&smoke, "smoke", false, "run session-start → event emit → resume-context → session-end smoke after registration")
 	cmd.Flags().BoolVar(&rotate, "rotate", false, "force fresh mint even if existing token present")
 
