@@ -42,8 +42,15 @@ func NewCheckpointCmd() *cobra.Command {
 			}
 			auditor := audit.New(cfg.AuditLog)
 
+			// v0.1.12: adopt the same flag→env precedence used by
+			// `improvement emit` + `event emit` (v0.1.11 session_id.go
+			// helper). Pre-v0.1.12 `checkpoint` required the explicit
+			// flag, leaving in-Claude-tool callers to plumb it by hand
+			// despite Claude Code already exposing $CLAUDE_SESSION_ID.
+			claudeSessionID = resolveClaudeSessionID(claudeSessionID)
 			if claudeSessionID == "" {
-				err := validationError(cmd, auditor, "checkpoint", fmt.Errorf("--claude-session-id is required"))
+				err := validationError(cmd, auditor, "checkpoint",
+					fmt.Errorf("--claude-session-id is required (or set %s)", claudeSessionIDEnv))
 				if IsSilent(err) {
 					return nil
 				}
@@ -111,7 +118,7 @@ func NewCheckpointCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "", "Claude session ID (required)")
+	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "", "Claude session ID (defaults to $CLAUDE_SESSION_ID)")
 	cmd.Flags().StringVar(&taskKey, "task-key", "", "task key")
 	cmd.Flags().StringVar(&checkpointType, "checkpoint-type", "", "checkpoint type")
 	cmd.Flags().StringVar(&status, "status", "", "status")

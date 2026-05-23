@@ -528,6 +528,181 @@ func TestResumeContext_PrettyFlagIndents(t *testing.T) {
 	}
 }
 
+// resume-context — v0.1.12 no-flag fallback + --prior cases. These use a
+// fresh httptest.Server inside the test (not the single-call fixture) because
+// the fallback path makes TWO sequential calls:
+//   1) GET /v1/agents/{name}/latest-session
+//   2) GET /v1/sessions/{id}/resume-context
+// We need per-path response routing + call-sequence assertion that the
+// single-shot fixture can't express.
+
+func TestResumeContext_NoFlag_FallsBackToLatestSession(t *testing.T) {
+	t.Setenv("CLAUDE_SESSION_ID", "") // explicit: no current session
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/agents/agent-test/latest-session":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"agent_id":"a-1","agent_name":"agent-test","latest_session":{"claude_session_id":"prior-session-99","status":"ended","started_at":"2026-05-23T10:00:00Z"}}`))
+		case "/v1/sessions/prior-session-99/resume-context":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"session":{"id":"a"}}`))
+		default:
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error":"not_found","path":"` + r.URL.Path + `"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "tok")
+	if err := os.WriteFile(tokenPath, []byte("test-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvURL, srv.URL)
+	t.Setenv(config.EnvTokenFile, tokenPath)
+	t.Setenv(config.EnvAgentName, "agent-test")
+	t.Setenv(config.EnvProjectSlug, "demo-project")
+	t.Setenv(config.EnvAuditLog, filepath.Join(dir, "audit.log"))
+
+	root := &cobra.Command{Use: "agentctl", SilenceUsage: true, SilenceErrors: true}
+	root.PersistentFlags().Bool("strict", false, "")
+	root.AddCommand(NewResumeContextCmd())
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"resume-context"})
+	root.SetContext(context.Background())
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 HTTP calls, got %d: %v", len(paths), paths)
+	}
+	if !strings.HasPrefix(paths[0], "/v1/agents/agent-test/latest-session") {
+		t.Fatalf("call 1 path = %s", paths[0])
+	}
+	// No --prior → no ?exclude
+	if strings.Contains(paths[0], "exclude=") {
+		t.Fatalf("call 1 should NOT have exclude=: %s", paths[0])
+	}
+	if !strings.HasPrefix(paths[1], "/v1/sessions/prior-session-99/resume-context") {
+		t.Fatalf("call 2 path = %s", paths[1])
+	}
+}
+
+func TestResumeContext_PriorFlag_PassesExcludeFromEnv(t *testing.T) {
+	t.Setenv("CLAUDE_SESSION_ID", "current-new-session")
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case "/v1/agents/agent-test/latest-session":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"latest_session":{"claude_session_id":"prior-session-77"}}`))
+		case "/v1/sessions/prior-session-77/resume-context":
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"session":{"id":"a"}}`))
+		default:
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "tok")
+	if err := os.WriteFile(tokenPath, []byte("test-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.EnvURL, srv.URL)
+	t.Setenv(config.EnvTokenFile, tokenPath)
+	t.Setenv(config.EnvAgentName, "agent-test")
+	t.Setenv(config.EnvProjectSlug, "demo-project")
+	t.Setenv(config.EnvAuditLog, filepath.Join(dir, "audit.log"))
+
+	root := &cobra.Command{Use: "agentctl", SilenceUsage: true, SilenceErrors: true}
+	root.PersistentFlags().Bool("strict", false, "")
+	root.AddCommand(NewResumeContextCmd())
+	root.SetOut(&bytes.Buffer{})
+	root.SetErr(&bytes.Buffer{})
+	root.SetArgs([]string{"resume-context", "--prior"})
+	root.SetContext(context.Background())
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 HTTP calls, got %d: %v", len(paths), paths)
+	}
+	if !strings.Contains(paths[0], "exclude=current-new-session") {
+		t.Fatalf("call 1 should pass exclude=current-new-session: %s", paths[0])
+	}
+	if !strings.HasPrefix(paths[1], "/v1/sessions/prior-session-77/resume-context") {
+		t.Fatalf("call 2 path = %s", paths[1])
+	}
+}
+
+func TestResumeContext_ExplicitFlagSkipsFallback(t *testing.T) {
+	// Even with empty env, an explicit flag must bypass the fallback entirely.
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "")
+	f.responseStatus = 200
+	f.responseBody = `{"session":{"id":"x"}}`
+
+	err := f.run(NewResumeContextCmd(), "--claude-session-id", "explicit-abc")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Single call, straight to resume-context — no latest-session lookup.
+	if f.gotPath != "/v1/sessions/explicit-abc/resume-context" {
+		t.Fatalf("path = %s (fallback path leaked into explicit-flag invocation)", f.gotPath)
+	}
+}
+
+// =============================================================================
+// checkpoint — v0.1.12 env-fallback parity with improvement/event emit
+// =============================================================================
+
+func TestCheckpoint_FallsBackToCLAUDESESSIONIDEnv(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "from-env-checkpoint-1")
+	f.responseStatus = 201
+	f.responseBody = `{"id":"ckpt-uuid"}`
+
+	err := f.run(NewCheckpointCmd(),
+		"--summary", "midway via env fallback",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.gotBody["claude_session_id"] != "from-env-checkpoint-1" {
+		t.Fatalf("expected env-fallback claude_session_id, got %v", f.gotBody["claude_session_id"])
+	}
+}
+
+func TestCheckpoint_FlagWinsOverEnv(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "from-env")
+	f.responseStatus = 201
+	f.responseBody = `{"id":"ckpt-uuid"}`
+
+	err := f.run(NewCheckpointCmd(),
+		"--claude-session-id", "from-flag",
+		"--summary", "explicit flag wins",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.gotBody["claude_session_id"] != "from-flag" {
+		t.Fatalf("expected flag to win, got %v", f.gotBody["claude_session_id"])
+	}
+}
+
 // =============================================================================
 // inbox poll
 // =============================================================================
