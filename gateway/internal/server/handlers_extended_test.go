@@ -229,6 +229,216 @@ func TestResumeContext_RejectsCrossAgentRead(t *testing.T) {
 }
 
 // =============================================================================
+// v0.1.11 — resume-context filters tool.used + surfaces recent_improvements
+//
+// Bug per Dale's 2026-05-23 empirical test: recent_events was dominated by
+// tool.used noise (19/20 events) AND improvement-notes were session-orphaned
+// (separate v0.1.11 fix on the agentctl side) so they never landed in
+// recent_events. The server-side fix is two-fold: default-exclude tool.used
+// and add a top-level recent_improvements field that queries per-agent
+// (not per-session) so improvement-notes are visible regardless of where
+// they were emitted from.
+// =============================================================================
+
+func TestResumeContext_FiltersToolUseByDefault(t *testing.T) {
+	env := newTestEnv(t, "")
+
+	const cid = "session-toolfilter-1"
+	_ = env.request("POST", "/v1/sessions/start", env.agentToken, map[string]any{
+		"claude_session_id": cid,
+	})
+	// Mix tool.used (noise) with session.checkpointed (signal).
+	_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type":        "tool.used",
+		"claude_session_id": cid,
+		"summary":           "Bash: ls",
+	})
+	_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type":        "tool.used",
+		"claude_session_id": cid,
+		"summary":           "Read: foo.go",
+	})
+	_ = env.request("POST", "/v1/sessions/checkpoint", env.agentToken, map[string]any{
+		"claude_session_id": cid,
+		"summary":           "real work",
+	})
+
+	w := env.request("GET", "/v1/sessions/"+cid+"/resume-context", env.agentToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var packet sessions.ResumePacket
+	if err := json.Unmarshal(w.Body.Bytes(), &packet); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, e := range packet.RecentEvents {
+		if e.EventType == "tool.used" {
+			t.Fatalf("recent_events should exclude tool.used by default; got %+v", e)
+		}
+	}
+	// session.started + session.checkpointed (2 lifecycle events) should both
+	// survive the filter.
+	if len(packet.RecentEvents) < 2 {
+		t.Fatalf("recent_events len = %d, want >= 2 lifecycle events", len(packet.RecentEvents))
+	}
+}
+
+func TestResumeContext_IncludeToolUseOptIn(t *testing.T) {
+	env := newTestEnv(t, "")
+
+	const cid = "session-toolfilter-optin-1"
+	_ = env.request("POST", "/v1/sessions/start", env.agentToken, map[string]any{
+		"claude_session_id": cid,
+	})
+	_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type":        "tool.used",
+		"claude_session_id": cid,
+		"summary":           "Bash: ls",
+	})
+
+	w := env.request("GET", "/v1/sessions/"+cid+"/resume-context?include_tool_use=true", env.agentToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var packet sessions.ResumePacket
+	_ = json.Unmarshal(w.Body.Bytes(), &packet)
+	saw := false
+	for _, e := range packet.RecentEvents {
+		if e.EventType == "tool.used" {
+			saw = true
+			break
+		}
+	}
+	if !saw {
+		t.Fatalf("recent_events should include tool.used when ?include_tool_use=true; got %+v",
+			packet.RecentEvents)
+	}
+}
+
+func TestResumeContext_RecentImprovementsAcrossSessions(t *testing.T) {
+	env := newTestEnv(t, "")
+
+	// Two sessions for the same agent, each emitting one improvement-note.
+	// The per-session event tail of session-imp-2 would historically miss
+	// session-imp-1's note; recent_improvements queries per-agent so both
+	// are surfaced regardless of which session the GET targets.
+	const cid1 = "session-imp-1"
+	const cid2 = "session-imp-2"
+	for _, cid := range []string{cid1, cid2} {
+		_ = env.request("POST", "/v1/sessions/start", env.agentToken, map[string]any{
+			"claude_session_id": cid,
+		})
+	}
+	_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type":        "agent.improvement-note",
+		"claude_session_id": cid1,
+		"summary":           "learning from session 1",
+		"payload": map[string]any{
+			"category":         "process",
+			"summary":          "learning from session 1",
+			"propagation_hint": "none",
+			"context":          "feat-01",
+		},
+	})
+	_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type":        "agent.improvement-note",
+		"claude_session_id": cid2,
+		"summary":           "learning from session 2",
+		"payload": map[string]any{
+			"category":         "tooling",
+			"summary":          "learning from session 2",
+			"propagation_hint": "mm",
+			"intent":           "info",
+		},
+	})
+
+	// Query resume-context for session 2 — recent_improvements should
+	// surface BOTH notes (cross-session), ordered most-recent first.
+	w := env.request("GET", "/v1/sessions/"+cid2+"/resume-context", env.agentToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var packet sessions.ResumePacket
+	if err := json.Unmarshal(w.Body.Bytes(), &packet); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(packet.RecentImprovements) != 2 {
+		t.Fatalf("recent_improvements len = %d, want 2 (cross-session); got=%+v",
+			len(packet.RecentImprovements), packet.RecentImprovements)
+	}
+	// Most-recent first: session 2's note (emitted last) is index 0.
+	if packet.RecentImprovements[0].Summary != "learning from session 2" {
+		t.Fatalf("recent_improvements[0].summary = %q, want session-2 note (DESC)",
+			packet.RecentImprovements[0].Summary)
+	}
+	if packet.RecentImprovements[0].Category != "tooling" {
+		t.Fatalf("recent_improvements[0].category = %q, want 'tooling' (payload decoded)",
+			packet.RecentImprovements[0].Category)
+	}
+	if packet.RecentImprovements[0].Intent != "info" {
+		t.Fatalf("recent_improvements[0].intent = %q, want 'info'", packet.RecentImprovements[0].Intent)
+	}
+	if packet.RecentImprovements[1].Context != "feat-01" {
+		t.Fatalf("recent_improvements[1].context = %q, want 'feat-01'",
+			packet.RecentImprovements[1].Context)
+	}
+}
+
+func TestResumeContext_RecentImprovementsLimitParam(t *testing.T) {
+	env := newTestEnv(t, "")
+
+	const cid = "session-imp-limit-1"
+	_ = env.request("POST", "/v1/sessions/start", env.agentToken, map[string]any{
+		"claude_session_id": cid,
+	})
+	for i := 0; i < 5; i++ {
+		_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+			"event_type":        "agent.improvement-note",
+			"claude_session_id": cid,
+			"summary":           fmt.Sprintf("note %d", i),
+			"payload":           map[string]any{"category": "process"},
+		})
+	}
+
+	w := env.request("GET", "/v1/sessions/"+cid+"/resume-context?improvements_limit=2", env.agentToken, nil)
+	var packet sessions.ResumePacket
+	_ = json.Unmarshal(w.Body.Bytes(), &packet)
+	if len(packet.RecentImprovements) != 2 {
+		t.Fatalf("recent_improvements len = %d, want 2 (capped by query param)",
+			len(packet.RecentImprovements))
+	}
+}
+
+func TestResumeContext_RecentImprovementsOrphanedNotesSurface(t *testing.T) {
+	env := newTestEnv(t, "")
+
+	const cid = "session-imp-orphan-1"
+	_ = env.request("POST", "/v1/sessions/start", env.agentToken, map[string]any{
+		"claude_session_id": cid,
+	})
+	// Insert an improvement-note WITHOUT claude_session_id — simulates pre-
+	// v0.1.11 orphaned events. recent_improvements must still surface them
+	// (their AgentSessionID will be nil in the response).
+	_ = env.request("POST", "/v1/events", env.agentToken, map[string]any{
+		"event_type": "agent.improvement-note",
+		"summary":    "orphaned legacy note",
+		"payload":    map[string]any{"category": "process"},
+	})
+
+	w := env.request("GET", "/v1/sessions/"+cid+"/resume-context", env.agentToken, nil)
+	var packet sessions.ResumePacket
+	_ = json.Unmarshal(w.Body.Bytes(), &packet)
+	if len(packet.RecentImprovements) != 1 {
+		t.Fatalf("recent_improvements len = %d, want 1 (orphaned note must still surface)",
+			len(packet.RecentImprovements))
+	}
+	if packet.RecentImprovements[0].AgentSessionID != nil {
+		t.Fatalf("orphaned note should have agent_session_id=nil; got %v",
+			*packet.RecentImprovements[0].AgentSessionID)
+	}
+}
+
+// =============================================================================
 // GET /v1/inbox
 // =============================================================================
 

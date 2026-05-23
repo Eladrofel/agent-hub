@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.11] — 2026-05-23
+
+Cross-/clear handoff bugfix. End-of-day empirical test by Dale on 2026-05-23 found that `agentctl improvement emit` did NOT tag events with `agent_session_id`, so improvement-notes landed session-orphaned and were invisible to `resume-context` queries. Combined with `recent_events` being dominated by `tool.used` noise (19/20 events), cross-/clear lost all captured learnings — including the load-bearing peer-coordination principle. v0.1.11 fixes the emit-side tagging bug, filters tool.used from the default resume-context tail, and adds a new `recent_improvements` field that surfaces cross-cutting fleet learnings regardless of which session they were emitted from.
+
+### Fixed — `agent_session_id` tagging bug on improvement-note emission
+
+- **`agentctl improvement emit`** now reads `--claude-session-id` (with `$CLAUDE_SESSION_ID` env fallback) and threads it into the POST `/v1/events` body so the gateway's existing `ResolveSessionID` path populates `agent_session_id`. Pre-v0.1.11 the flag didn't exist on this subcommand and there was no env fallback, so every emission landed with `agent_session_id IS NULL`. Empty-resolution is best-effort: stderr warns `"improvement emit: no CLAUDE_SESSION_ID — event will be session-orphaned (cross-/clear handoff will not surface it)"` but the call proceeds — one-off operator scripts can legitimately emit notes without a session context.
+- **`agentctl event emit`** gets the same env fallback (the flag itself existed pre-v0.1.11 but only respected when set explicitly, so unflagged emits in tool contexts had the same orphaning bug). Identical warning + best-effort posture.
+- **Shared helper** `resolveClaudeSessionID` + `warnMissingSessionID` in `gateway/internal/agentctl/commands/session_id.go` so any future emit-style subcommand (e.g. an `agentctl handoff create` of v0.2.x) gets the same posture for free. The helper centralises the `CLAUDE_SESSION_ID` env-var name to keep spelling consistent with the pre-existing `agentctl resume-context` path.
+- No DB schema change. The gateway's per-event-insert already supports `agent_session_id` resolution from `claude_session_id` (added in v0.1.0); the bug was purely client-side under-emission.
+
+### Added — `resume-context` filters `tool.used` + new `recent_improvements`
+
+- **`recent_events` default-excludes `event_type='tool.used'`**. Tool calls can occupy 19/20 of an active session's event tail, drowning out the interesting signal (session.checkpointed, agent.improvement-note, progress.updated). New optional query param **`?include_tool_use=true`** (or `=1`) returns the raw unfiltered stream for debugging / detailed audit.
+- **`recent_improvements`** — new top-level field on the resume-context response alongside `session` / `latest_checkpoint` / `recent_events`. Returns the last N `agent.improvement-note` events for **this agent_id** across ALL sessions (NOT just the requested session — improvement-notes are cross-cutting fleet learnings, not session-scoped state). Default N=10, max 50. Tune via **`?improvements_limit=N`**. Per-item shape: `{id, event_id, created_at, summary, category, intent, propagation_hint, context, agent_session_id (nullable)}`. The nullable `agent_session_id` preserves legibility of pre-v0.1.11 orphaned notes — they still surface in resume-context queries even though new emissions will always carry it.
+- **Handler + package doc** (`handlers_sessions.go` / `sessions.go`) now spell out the resume-context contract: what's IN the packet (session / latest_checkpoint / recent_events / recent_improvements), what's NOT (no aspirational open handoffs / decisions / pending operator messages / active locks — future work, tracked separately), the default filter behaviour + opt-out params, and a note that this is the source-of-truth for cross-/clear handoff per Dale's 2026-05-23 directive.
+
+### Why
+
+Without these two fixes, the cross-/clear handoff path documented in v0.1.10's resume-context contract was operationally broken: a `/clear`'d agent saw `recent_events` full of `Bash: ls` lines and an empty `recent_improvements` slot, missing every captured learning the fleet had logged in the prior session. The checkpoint round-trip itself was working (verified end-to-end pre-fix); only the events-side path was broken.
+
+### Tests
+
+- 3 new agentctl tests covering `improvement emit` claude-session-id resolution (env, flag-overrides-env, empty-warns-but-proceeds).
+- 2 new agentctl tests covering `event emit` env fallback + empty warn.
+- 4 new integration tests covering resume-context tool.used filtering (default + opt-in), recent_improvements cross-session query + per-item payload decode, `?improvements_limit` cap, and orphaned-note legibility.
+- All existing tests continue to pass without modification — recent_events still surfaces non-tool.used events at the historical default of 20, and the response packet remains JSON-additive (clients that don't read `recent_improvements` are unaffected).
+
+`go build ./...` clean. `go vet ./...` clean. All packages pass `go test ./...`.
+
 ## [0.1.10] — 2026-05-23
 
 Visual + programmatic enforcement of the v0.5.0 peer-coordination policy plus rich Mattermost surface for the team-awareness event stream. Pairs with plugin **v0.5.1** (which threads `--intent` through `/note-improvement` + corrects the v0.5.0 §7.11.2 doc).

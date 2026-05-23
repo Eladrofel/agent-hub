@@ -75,12 +75,13 @@ func NewImprovementCmd() *cobra.Command {
 // `agentctl event emit`.
 func newImprovementEmitCmd() *cobra.Command {
 	var (
-		category    string
-		summary     string
-		contextStr  string
-		propagation string
-		details     string
-		intent      string
+		category        string
+		summary         string
+		contextStr      string
+		propagation     string
+		details         string
+		intent          string
+		claudeSessionID string
 	)
 
 	cmd := &cobra.Command{
@@ -199,6 +200,21 @@ func newImprovementEmitCmd() *cobra.Command {
 				body["project_slug"] = cfg.ProjectSlug
 			}
 
+			// v0.1.11: improvement-notes MUST carry claude_session_id so the
+			// gateway can resolve agent_session_id on insert. Without it the
+			// row lands with agent_session_id=NULL and resume-context's per-
+			// session event filter drops it → cross-/clear loses the captured
+			// learning. Flag wins over env (the same precedence agentctl
+			// checkpoint + resume-context use). Empty resolution is
+			// best-effort: warn-to-stderr but don't halt — one-off operator
+			// scripts can legitimately emit notes without a session context.
+			resolvedCSID := resolveClaudeSessionID(claudeSessionID)
+			if resolvedCSID != "" {
+				body["claude_session_id"] = resolvedCSID
+			} else {
+				warnMissingSessionID(cmd.ErrOrStderr(), "improvement emit")
+			}
+
 			cl := client.New(cfg)
 
 			return runCall(cmd.Context(), callOpts{
@@ -257,6 +273,8 @@ func newImprovementEmitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&intent, "intent", "",
 		fmt.Sprintf("event intent (one of: %s); absent = info; gateway requires role=operator for 'directive'",
 			strings.Join(ValidIntents, ", ")))
+	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "",
+		"Claude session ID for cross-/clear handoff visibility (defaults to $CLAUDE_SESSION_ID; empty → warn-but-continue)")
 	cmd.Flags().Bool("json", false, "emit the full response body on stdout (default: stderr summary)")
 
 	return cmd

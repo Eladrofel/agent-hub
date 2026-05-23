@@ -292,14 +292,43 @@ func LatestCheckpoint(ctx context.Context, pool *pgxpool.Pool, agentSessionID st
 // =============================================================================
 // resume-context composer
 // =============================================================================
+//
+// The resume-context endpoint is the source-of-truth for cross-/clear handoff
+// per Dale's 2026-05-23 directive: an agent that loses its in-process context
+// (via /clear or session-restart) must be able to reconstruct what it was
+// doing + what the fleet has learned by GET-ing this packet. The composition
+// is intentionally deterministic so the same call returns the same JSON until
+// new events land (V2's "identical before and after /clear" AC).
+//
+// What's IN the packet:
+//   - session: the agent_sessions row.
+//   - latest_checkpoint: most recent session_checkpoints row, or nil.
+//   - recent_events: per-session event tail, capped, most-recent first.
+//     Default excludes event_type='tool.used' (noise; 19/20 of an agent's
+//     tail can be tool calls). Opt back in via ?include_tool_use=true.
+//   - recent_improvements: last N agent.improvement-note events for THIS
+//     agent across ALL sessions. Improvement-notes are cross-cutting fleet
+//     learnings, not session-scoped state, so per-session filtering would
+//     hide them. ?improvements_limit=N (default 10, max 50) tunes the cap.
+//
+// What's NOT (yet) in the packet — surface in a future release as
+// concrete-use-cases land:
+//   - open handoffs / claimable work
+//   - open decisions / decisions needing review
+//   - pending operator messages (currently fanned out via inbox poll)
+//   - active locks held by this agent
+// These are listed here so future readers don't assume their absence is a
+// bug, and so the doc-comment is the authoritative spec for the response
+// shape.
 
 // ResumePacket is the V2-critical brief returned by GET
 // /v1/sessions/:id/resume-context. Identical-before-and-after-/clear is the
 // load-bearing AC; the composition is intentionally deterministic.
 type ResumePacket struct {
-	Session    *Session     `json:"session"`
-	Checkpoint *Checkpoint  `json:"latest_checkpoint,omitempty"`
-	RecentEvents []EventTail `json:"recent_events"`
+	Session            *Session          `json:"session"`
+	Checkpoint         *Checkpoint       `json:"latest_checkpoint,omitempty"`
+	RecentEvents       []EventTail       `json:"recent_events"`
+	RecentImprovements []ImprovementTail `json:"recent_improvements"`
 }
 
 type EventTail struct {
@@ -309,11 +338,52 @@ type EventTail struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// ImprovementTail is one item in ResumePacket.RecentImprovements. Shape
+// mirrors EventTail but adds the improvement-specific payload fields
+// (category, intent, propagation_hint, context) decoded out of payload
+// JSONB. AgentSessionID is nullable because v0.1.10-and-earlier improvement-
+// notes are session-orphaned (the v0.1.11 bug this release fixes); we
+// preserve their legibility for resume-context queries even though new
+// emissions will always set it.
+type ImprovementTail struct {
+	ID              string  `json:"id"`
+	EventID         string  `json:"event_id"`
+	CreatedAt       string  `json:"created_at"`
+	Summary         string  `json:"summary,omitempty"`
+	Category        string  `json:"category,omitempty"`
+	Intent          string  `json:"intent,omitempty"`
+	PropagationHint string  `json:"propagation_hint,omitempty"`
+	Context         string  `json:"context,omitempty"`
+	AgentSessionID  *string `json:"agent_session_id"`
+}
+
+// ResumeOpts carries the optional knobs for Resume. Zero-value defaults
+// match the historical behaviour (recentEventsLimit=20, improvementsLimit=10,
+// tool.used filtered). The handler maps query params onto this struct.
+type ResumeOpts struct {
+	RecentEventsLimit  int
+	ImprovementsLimit  int
+	IncludeToolUse     bool
+}
+
+const (
+	defaultRecentEventsLimit = 20
+	defaultImprovementsLimit = 10
+	maxImprovementsLimit     = 50
+)
+
 // Resume composes the latest session row + latest checkpoint + recent events
-// tail (most-recent first, capped). recentEventsLimit defaults to 20 if zero.
-func Resume(ctx context.Context, pool *pgxpool.Pool, claudeSessionID string, recentEventsLimit int) (*ResumePacket, error) {
-	if recentEventsLimit <= 0 {
-		recentEventsLimit = 20
+// tail (most-recent first, capped) + recent improvement-notes for the agent
+// across all sessions. See the package-level doc for the response contract.
+func Resume(ctx context.Context, pool *pgxpool.Pool, claudeSessionID string, opts ResumeOpts) (*ResumePacket, error) {
+	if opts.RecentEventsLimit <= 0 {
+		opts.RecentEventsLimit = defaultRecentEventsLimit
+	}
+	if opts.ImprovementsLimit <= 0 {
+		opts.ImprovementsLimit = defaultImprovementsLimit
+	}
+	if opts.ImprovementsLimit > maxImprovementsLimit {
+		opts.ImprovementsLimit = maxImprovementsLimit
 	}
 
 	sess, err := GetByClaudeSessionID(ctx, pool, claudeSessionID)
@@ -326,25 +396,41 @@ func Resume(ctx context.Context, pool *pgxpool.Pool, claudeSessionID string, rec
 		return nil, fmt.Errorf("latest checkpoint: %w", err)
 	}
 
-	events, err := recentEvents(ctx, pool, sess.ID, recentEventsLimit)
+	events, err := recentEvents(ctx, pool, sess.ID, opts.RecentEventsLimit, opts.IncludeToolUse)
 	if err != nil {
 		return nil, fmt.Errorf("recent events: %w", err)
 	}
 
+	improvements, err := recentImprovements(ctx, pool, sess.AgentID, opts.ImprovementsLimit)
+	if err != nil {
+		return nil, fmt.Errorf("recent improvements: %w", err)
+	}
+
 	return &ResumePacket{
-		Session:      sess,
-		Checkpoint:   ckpt,
-		RecentEvents: events,
+		Session:            sess,
+		Checkpoint:         ckpt,
+		RecentEvents:       events,
+		RecentImprovements: improvements,
 	}, nil
 }
 
-func recentEvents(ctx context.Context, pool *pgxpool.Pool, sessionID string, limit int) ([]EventTail, error) {
-	const q = `
+// recentEvents returns the per-session event tail. tool.used is excluded by
+// default (it can occupy 19/20 of the tail in active sessions, drowning out
+// session.checkpointed / agent.improvement-note / progress.updated). Callers
+// who want the unfiltered raw stream pass includeToolUse=true.
+func recentEvents(ctx context.Context, pool *pgxpool.Pool, sessionID string, limit int, includeToolUse bool) ([]EventTail, error) {
+	q := `
 		SELECT id, event_type, COALESCE(summary, ''), created_at
 		  FROM events
-		 WHERE agent_session_id = $1
+		 WHERE agent_session_id = $1`
+	if !includeToolUse {
+		q += `
+		   AND event_type <> 'tool.used'`
+	}
+	q += `
 		 ORDER BY created_at DESC
 		 LIMIT $2`
+
 	rows, err := pool.Query(ctx, q, sessionID, limit)
 	if err != nil {
 		return nil, err
@@ -360,6 +446,71 @@ func recentEvents(ctx context.Context, pool *pgxpool.Pool, sessionID string, lim
 		}
 		e.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// recentImprovements returns the last N agent.improvement-note events for
+// the given agent across ALL sessions. Improvement-notes are cross-cutting
+// learnings, not session-scoped state, so per-session filtering would hide
+// the fleet's history from a freshly-/clear'd agent. Decoded payload fields
+// (category / intent / propagation_hint / context) are surfaced flat to
+// avoid forcing the caller to re-decode JSONB.
+func recentImprovements(ctx context.Context, pool *pgxpool.Pool, agentID string, limit int) ([]ImprovementTail, error) {
+	const q = `
+		SELECT id, COALESCE(summary, ''), payload, agent_session_id, created_at
+		  FROM events
+		 WHERE agent_id = $1
+		   AND event_type = 'agent.improvement-note'
+		 ORDER BY created_at DESC
+		 LIMIT $2`
+	rows, err := pool.Query(ctx, q, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]ImprovementTail, 0, limit)
+	for rows.Next() {
+		var (
+			it        ImprovementTail
+			payload   []byte
+			createdAt time.Time
+			sessID    *string
+		)
+		if err := rows.Scan(&it.ID, &it.Summary, &payload, &sessID, &createdAt); err != nil {
+			return nil, err
+		}
+		it.EventID = it.ID // mirror so the shape matches per-event consumers' expectations
+		it.CreatedAt = createdAt.UTC().Format(time.RFC3339Nano)
+		it.AgentSessionID = sessID
+
+		// Decode the curated payload fields. Best-effort: a malformed JSONB
+		// row shouldn't fail the whole resume — we just surface the bare row.
+		var pl map[string]any
+		if err := json.Unmarshal(payload, &pl); err == nil {
+			if v, ok := pl["category"].(string); ok {
+				it.Category = v
+			}
+			if v, ok := pl["intent"].(string); ok {
+				it.Intent = v
+			}
+			if v, ok := pl["propagation_hint"].(string); ok {
+				it.PropagationHint = v
+			}
+			if v, ok := pl["context"].(string); ok {
+				it.Context = v
+			}
+			// Prefer payload.summary if the event-row summary column was
+			// empty (shouldn't happen for v0.1.9+ improvement emits, but
+			// keeps legacy rows legible).
+			if it.Summary == "" {
+				if v, ok := pl["summary"].(string); ok {
+					it.Summary = v
+				}
+			}
+		}
+		out = append(out, it)
 	}
 	return out, rows.Err()
 }

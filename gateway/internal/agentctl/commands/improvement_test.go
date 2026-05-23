@@ -238,6 +238,88 @@ func TestImprovementEmit_BestEffortServerErrorExits0(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// v0.1.11 — agent_session_id tagging via claude_session_id resolution
+//
+// Bug: pre-v0.1.11 improvement-notes were emitted without claude_session_id,
+// so the gateway resolved agent_session_id to NULL and resume-context's per-
+// session event tail dropped them → cross-/clear handoff lost every captured
+// learning. Fix: --claude-session-id flag (with $CLAUDE_SESSION_ID fallback)
+// is now plumbed into the POST /v1/events body so the gateway's existing
+// ResolveSessionID path can populate agent_session_id.
+// =============================================================================
+
+func TestImprovementEmit_ClaudeSessionIDFromEnv(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "claude-env-sid-1")
+	f.responseStatus = 201
+	f.responseBody = `{"event_id":"evt-imp"}`
+
+	err := f.runNested(NewImprovementCmd(), "emit",
+		"--category", "process",
+		"--summary", "tagged via env",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.gotBody["claude_session_id"] != "claude-env-sid-1" {
+		t.Fatalf("claude_session_id should default to $CLAUDE_SESSION_ID; got %v (raw=%s)",
+			f.gotBody["claude_session_id"], f.gotRawBody)
+	}
+	if strings.Contains(f.stderr.String(), "session-orphaned") {
+		t.Fatalf("stderr should NOT warn when env is set; got %q", f.stderr.String())
+	}
+}
+
+func TestImprovementEmit_ClaudeSessionIDFlagOverridesEnv(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "claude-env-sid-1")
+	f.responseStatus = 201
+	f.responseBody = `{"event_id":"evt-imp"}`
+
+	err := f.runNested(NewImprovementCmd(), "emit",
+		"--category", "process",
+		"--summary", "tagged via flag",
+		"--claude-session-id", "claude-flag-sid-2",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.gotBody["claude_session_id"] != "claude-flag-sid-2" {
+		t.Fatalf("flag should win over env; got %v", f.gotBody["claude_session_id"])
+	}
+}
+
+func TestImprovementEmit_NoSessionIDWarnsButProceeds(t *testing.T) {
+	f := newFixture(t)
+	// Explicitly unset $CLAUDE_SESSION_ID (parent test process might have it).
+	t.Setenv("CLAUDE_SESSION_ID", "")
+	f.responseStatus = 201
+	f.responseBody = `{"event_id":"evt-imp"}`
+
+	err := f.runNested(NewImprovementCmd(), "emit",
+		"--category", "process",
+		"--summary", "orphaned but emitted",
+	)
+	if err != nil {
+		t.Fatalf("best-effort: missing session id should not halt; got %v", err)
+	}
+	// Field should be ABSENT from the body (not empty-string).
+	if _, ok := f.gotBody["claude_session_id"]; ok {
+		t.Fatalf("body should omit claude_session_id when unresolved; raw=%s", f.gotRawBody)
+	}
+	if !strings.Contains(f.stderr.String(), "improvement emit: no CLAUDE_SESSION_ID") {
+		t.Fatalf("stderr should warn about orphaned event; got %q", f.stderr.String())
+	}
+	if !strings.Contains(f.stderr.String(), "session-orphaned") {
+		t.Fatalf("stderr should mention session-orphaned; got %q", f.stderr.String())
+	}
+	// And the call should still have completed successfully (event emitted line).
+	if !strings.Contains(f.stderr.String(), "improvement-note emitted") {
+		t.Fatalf("stderr should still show emit success; got %q", f.stderr.String())
+	}
+}
+
 func TestImprovementEmit_SanitiserBlockedSurfacesPatternDetail(t *testing.T) {
 	f := newFixture(t)
 	f.responseStatus = 422

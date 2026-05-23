@@ -316,6 +316,53 @@ func TestEventEmit_BuildsCorrectRequest(t *testing.T) {
 	}
 }
 
+// v0.1.11 — same agent_session_id tagging fix as improvement emit. event_emit
+// already had the --claude-session-id flag pre-v0.1.11; v0.1.11 adds the
+// $CLAUDE_SESSION_ID env fallback so unflagged emits in tool contexts also
+// get tagged. Empty-resolution warning is identical to improvement emit.
+func TestEventEmit_ClaudeSessionIDFromEnv(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "claude-env-eemit-1")
+	f.responseStatus = 201
+	f.responseBody = `{"event_id":"evt-1"}`
+
+	err := f.runNested(NewEventCmd(), "emit",
+		"--type", "progress.updated",
+		"--summary", "smoke",
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if f.gotBody["claude_session_id"] != "claude-env-eemit-1" {
+		t.Fatalf("claude_session_id should default to $CLAUDE_SESSION_ID; got %v",
+			f.gotBody["claude_session_id"])
+	}
+	if strings.Contains(f.stderr.String(), "session-orphaned") {
+		t.Fatalf("stderr should NOT warn when env is set; got %q", f.stderr.String())
+	}
+}
+
+func TestEventEmit_NoSessionIDWarnsButProceeds(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("CLAUDE_SESSION_ID", "")
+	f.responseStatus = 201
+	f.responseBody = `{"event_id":"evt-1"}`
+
+	err := f.runNested(NewEventCmd(), "emit",
+		"--type", "progress.updated",
+		"--summary", "orphan",
+	)
+	if err != nil {
+		t.Fatalf("best-effort: missing session id should not halt; got %v", err)
+	}
+	if _, ok := f.gotBody["claude_session_id"]; ok {
+		t.Fatalf("body should omit claude_session_id when unresolved; raw=%s", f.gotRawBody)
+	}
+	if !strings.Contains(f.stderr.String(), "event emit: no CLAUDE_SESSION_ID") {
+		t.Fatalf("stderr should warn about orphaned event; got %q", f.stderr.String())
+	}
+}
+
 func TestEventEmit_SanitiserBlockedBestEffortExits0(t *testing.T) {
 	f := newFixture(t)
 	f.responseStatus = 422

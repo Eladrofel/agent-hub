@@ -109,8 +109,16 @@ func newEventEmitCmd() *cobra.Command {
 			if taskKey != "" {
 				body["task_key"] = taskKey
 			}
-			if claudeSessionID != "" {
-				body["claude_session_id"] = claudeSessionID
+			// v0.1.11: same env fallback as improvement emit. The flag wins;
+			// $CLAUDE_SESSION_ID is the fallback (set by Claude Code in tool
+			// contexts); empty is best-effort with a stderr warning. Tagging
+			// is the load-bearing requirement for cross-/clear handoff — see
+			// session_id.go for the rationale.
+			resolvedCSID := resolveClaudeSessionID(claudeSessionID)
+			if resolvedCSID != "" {
+				body["claude_session_id"] = resolvedCSID
+			} else {
+				warnMissingSessionID(cmd.ErrOrStderr(), "event emit")
 			}
 			if branch != "" {
 				body["branch"] = branch

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -207,6 +208,24 @@ func (a *App) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 
 // =============================================================================
 // GET /v1/sessions/{claude_session_id}/resume-context
+//
+// Source-of-truth for cross-/clear handoff (Dale's 2026-05-23 directive). The
+// response packet shape + filter contract is documented on sessions.Resume /
+// sessions.ResumePacket; the short version is:
+//   - session: the agent_sessions row.
+//   - latest_checkpoint: most recent session_checkpoints row, or nil.
+//   - recent_events: per-session event tail (default 20, most-recent first).
+//     Excludes event_type='tool.used' by default — tool calls drown the
+//     interesting events (session.checkpointed, agent.improvement-note,
+//     progress.updated). Pass ?include_tool_use=true to get the raw stream.
+//   - recent_improvements: last N agent.improvement-note events for this
+//     agent across ALL sessions (improvement-notes are cross-cutting fleet
+//     learnings, not session-scoped state). Tune via ?improvements_limit=N
+//     (default 10, max 50).
+//
+// What's NOT (yet) in the response: open handoffs, open decisions, pending
+// operator messages, active locks — those are aspirational and tracked
+// separately. Don't grep this handler expecting to find them.
 // =============================================================================
 
 func (a *App) handleSessionResumeContext(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +236,20 @@ func (a *App) handleSessionResumeContext(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	packet, err := sessions.Resume(r.Context(), a.Store.Pool, cid, 20)
+	// Query-param parsing. Both knobs are optional and silently fall back
+	// to defaults on parse failure — a malformed `?improvements_limit=foo`
+	// shouldn't 400-bomb the cross-/clear handoff path.
+	opts := sessions.ResumeOpts{}
+	if v := r.URL.Query().Get("include_tool_use"); v == "1" || v == "true" {
+		opts.IncludeToolUse = true
+	}
+	if v := r.URL.Query().Get("improvements_limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			opts.ImprovementsLimit = n
+		}
+	}
+
+	packet, err := sessions.Resume(r.Context(), a.Store.Pool, cid, opts)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeErrorWithDetails(w, http.StatusNotFound, "unknown_session",
