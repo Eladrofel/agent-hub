@@ -2,6 +2,57 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.14] — 2026-05-23
+
+Work-item peer-coordination event types + read endpoint. Pairs with **plugin v0.5.4** which adds the `/start-work-item` active-claim pre-flight, the `--force-claim` override, and the symmetric `/finish-work-item` finish-emit. Closes Dale's 2026-05-23 peer-awareness gap (two agents on different VMs could silently race the same `<work-item-key>`; only signal was a Mode-3-only Mattermost heads-up gated on `CONCEPT_CHAT_MM_URL`).
+
+### Added — `agent.work-item.{claimed,finished}` curated event types
+
+- **Two new entries in `CuratedEventTypes`** (`internal/events/events.go`). Same auto-MM-relay mechanism as `agent.improvement-note` — the outbox-worker forwards to the project's `mattermost_outbox_channel` (or the operator's default channel). Mode-1 deployments still get peer-visibility on the DB side; Mode-3 deployments get the chat heads-up for free without per-skill `chat-emit` calls.
+- **No DB migration.** `events.event_type` is `text NOT NULL` — no whitelist constraint to update. The existing GIN index on `events.payload` covers the `payload->>'wi_key' = $1` filter the new read endpoint uses.
+- **Payload shape:** `{wi_key, repo, branch?, force?}` for `claimed`; `{wi_key, repo, pr_url?}` for `finished`. `task_key`/`task_id` linkage deliberately not used — work-items aren't tracked in the `tasks` table today; payload-JSON is sufficient and indexable.
+
+### Added — `GET /v1/work-items/{wi_key}/active-claims` agent-readable endpoint
+
+- New handler `handleWorkItemActiveClaims` in `internal/server/handlers_workitem.go`. Registered in the non-admin `RequireAgent` route group (sibling to `/v1/me/latest-session`) so any authenticated agent can pre-flight before claiming — operator-only gating would have forced the agent VMs to ask the operator to run the check for them, defeating the peer-coordination purpose.
+- **Project scope via `?project_slug=<slug>` query param.** Same resolution path as POST /v1/events; if missing or unresolvable, returns an empty list with HTTP 200 (best-effort posture — the pre-flight skill should treat empty as "no conflicts" without ceremony).
+- **Algorithm:** `WITH latest AS (SELECT DISTINCT ON (agent_id) … ORDER BY agent_id, created_at DESC)` returns the most-recent event per agent for the wi-key; the outer filter keeps only those whose latest is `claimed`. Handles `--force-claim` (re-claim after another agent already claimed → both surface as active) and re-claim-after-finish correctly without app-side bookkeeping.
+- **Response:** `{wi_key, project_slug, active_claims: [{event_id, agent_id, agent_name, alias?, claimed_at, claude_session_id?, repo?, branch?, force?}], total}`.
+
+### Added — chat-side icon + color polish for work-item events
+
+- **`agent.work-item.claimed` → 🔵 + blue (#0d6efd)**; **`agent.work-item.finished` → ✅ + green (#198754)**. Plain-line fallback renders `🔵 <alias>: claimed <wi-key> (<repo>) [forced]` / `✅ <alias>: finished <wi-key> (<repo>) — <pr-url>` — same icon+alias treatment improvement-notes get. Visual scan-ability matches the existing 💡 (note) / 🟢 (session-start) / 🔴 (session-end) / 📍 (checkpoint) vocabulary.
+- Implementation: extended `eventTypeIcon` + `eventTypeColor` in `internal/outbox/adapters.go` and `formatCuratedMessage` in `internal/server/handlers_events_format.go`, plus 4 new tests in `handlers_events_format_test.go` covering icon presence, alias-fallback, and `[forced]` suffix pass-through.
+
+### Added — `agentctl work-item {claim,finish,active}` subcommand group
+
+- New `gateway/internal/agentctl/commands/work_item.go` mirroring the multi-verb pattern in `improvement.go`. Three verbs:
+  - `agentctl work-item claim --wi-key X --repo Y [--branch Z] [--force]` → POST `/v1/events` (event_type=`agent.work-item.claimed`).
+  - `agentctl work-item finish --wi-key X --repo Y [--pr-url U]` → POST `/v1/events` (event_type=`agent.work-item.finished`).
+  - `agentctl work-item active --wi-key X [--pretty]` → GET `/v1/work-items/{X}/active-claims?project_slug=<cfg.ProjectSlug>`.
+- Reuses `resolveClaudeSessionID` (v0.1.11 helper) for env-parity with `improvement emit`, `event emit`, `checkpoint` (v0.1.12+), and now `work-item claim/finish`.
+- Reuses `runCall` + `callOpts` POST pattern (per `checkpoint.go`) and GET pattern (per `resume_context.go`). Audit log entries written via existing `audit.Append()`.
+- Registered in `cmd/agentctl/main.go` alongside `NewImprovementCmd()`.
+
+### Why (Dale's 2026-05-23 peer-awareness audit)
+
+The question was "when agents pick up work, especially concept work, will they advise the peers so that they know not to pick the same work?" Investigation found: (1) `/start-work-item` Phase 1.2 emitted only a `chat-emit` heads-up — Mode-3-only, not durable, not queryable. (2) No `agent.work-item.*` event type existed in the store. (3) No skill queried the event store before claiming. (4) `references/peer-coordination-policy.md` explicitly named "auto-claiming a work item another peer was assigned" as a forbidden anti-pattern, but the system relied on operator-side out-of-band coordination to prevent it. v0.1.14 + v0.5.4 closes the gap with Postgres-authoritative claim/finish events and a cheap agent-readable read endpoint backing the pre-flight check. Mattermost remains the human-visibility relay (now driven by the curated event-type outbox, not by a separate `chat-emit` call).
+
+### Smoke results (operator + claude-1 + claude-2, 2026-05-23)
+
+- **Happy path:** operator claim feat-test-99-dummy → `active`=1 → finish → `active`=0. ✓
+- **Cross-host visibility:** claude-1/Mikey claims feat-test-98-race → operator Mac sees the claim; claude-2/Donnie sees the claim via `agentctl work-item active`. ✓
+- **Force-claim race:** claude-2/Donnie passes `--force` → second claim row written → operator sees both (newer Donnie + older Mikey) with `force: true` on Donnie's row. ✓
+- **MM auto-relay:** all 6 outbox rows for the smoke events `status=sent, attempts=0`. ✓
+- **Mode-1 (no chat config)** and **cross-project isolation** scenarios architecturally guaranteed by construction (`CONCEPT_CHAT_MM_URL` gates only `chat-emit`, not the durable event path; project_id filter is mandatory on the read query); live smoke deferred to v0.1.15 if pain surfaces.
+
+### Tests
+
+- All existing gateway test packages continue to pass (`go test ./...` clean).
+- New handler is exercised by the smoke run above; an integration test fixture for `handleWorkItemActiveClaims` is a v0.1.15 follow-up (same posture as `handleMeLatestSession` shipped in v0.1.13).
+
+`go build ./...` clean. `go vet ./...` clean.
+
 ## [0.1.13] — 2026-05-23
 
 Hotfix: v0.1.12's `resume-context` no-flag fallback called `/v1/agents/{name}/latest-session` which is admin-token-protected → non-operator peers (and operator's per-host bearer) hit HTTP 401 `invalid_admin_token`. Discovered empirically during the v0.5.3 `/resume-context` skill smoke test 2026-05-23.

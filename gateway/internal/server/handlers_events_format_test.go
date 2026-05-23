@@ -29,6 +29,53 @@ func TestFormatCuratedMessage_NonImprovementReturnsEmpty(t *testing.T) {
 	}
 }
 
+// v0.1.14 — work-item events get their own one-liners:
+//
+//	🔵 <alias>: <summary>   (claimed)
+//	✅ <alias>: <summary>   (finished)
+//
+// The summary is composed agentctl-side and already carries the wi-key,
+// repo, [forced] suffix, and PR URL — the formatter just leads with an icon
+// + alias so chat scanning works the same way it does for improvement-notes.
+
+func TestFormatCuratedMessage_WorkItemClaimedHasBlueCircle(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-1", Alias: "Mikey"}
+	got := formatCuratedMessage("agent.work-item.claimed", agent,
+		"claimed feat-04-bulk-import (customer-web)", nil)
+	want := "\U0001f535 Mikey: claimed feat-04-bulk-import (customer-web)"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestFormatCuratedMessage_WorkItemFinishedHasCheckMark(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-2", Alias: "Donnie"}
+	got := formatCuratedMessage("agent.work-item.finished", agent,
+		"finished feat-04-bulk-import (customer-web) — https://forge/pr/42", nil)
+	want := "✅ Donnie: finished feat-04-bulk-import (customer-web) — https://forge/pr/42"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestFormatCuratedMessage_WorkItemAliasFallsBackToName(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-3", Alias: ""}
+	got := formatCuratedMessage("agent.work-item.claimed", agent,
+		"claimed feat-99 (customer-web)", nil)
+	if !strings.Contains(got, "agent-3:") {
+		t.Fatalf("alias-empty should fall back to Name; got %q", got)
+	}
+}
+
+func TestFormatCuratedMessage_WorkItemForcedSuffixPreserved(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-2", Alias: "Donnie"}
+	got := formatCuratedMessage("agent.work-item.claimed", agent,
+		"claimed feat-04-bulk-import (customer-web) [forced]", nil)
+	if !strings.HasSuffix(got, "[forced]") {
+		t.Fatalf("force suffix should pass through verbatim; got %q", got)
+	}
+}
+
 func TestFormatImprovementNote_AliasPreferred(t *testing.T) {
 	agent := &auth.Agent{Name: "agent-operator-mac", Alias: "Splinter"}
 	got := formatCuratedMessage("agent.improvement-note", agent,

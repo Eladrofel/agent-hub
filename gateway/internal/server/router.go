@@ -58,6 +58,9 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 			// Per-host bearer only (no admin required); operates on caller.ID.
 			r.Get("/me/latest-session", app.handleMeLatestSession)
 			r.Get("/inbox", app.handleInboxPoll)
+			// v0.1.14 — work-item peer-coordination pre-flight. Agent-readable
+			// (not admin-gated); project is inferred from bearer-token agent_id.
+			r.Get("/work-items/{wi_key}/active-claims", app.handleWorkItemActiveClaims)
 		})
 		// Admin endpoints (ADMIN_TOKEN env var).
 		r.Group(func(r chi.Router) {

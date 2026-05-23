@@ -37,6 +37,12 @@ var CuratedEventTypes = map[string]bool{
 	"session.ended":          true,
 	"sanitiser.blocked":      true,
 	"agent.improvement-note": true, // v0.1.9 — captured learnings relayed to MM with 💡 prefix
+	// v0.1.14 — work-item claim / finish events for cross-VM peer coordination.
+	// /start-work-item writes claimed before branching; /finish-work-item writes
+	// finished after PR open. Auto-MM-relay so peers + operator see claims in chat
+	// alongside the durable Postgres row that backs the pre-flight conflict check.
+	"agent.work-item.claimed":  true,
+	"agent.work-item.finished": true,
 }
 
 // IsCurated reports whether an event_type should be mirrored to Mattermost.

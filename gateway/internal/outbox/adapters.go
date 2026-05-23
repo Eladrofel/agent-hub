@@ -84,6 +84,10 @@ func eventTypeColor(eventType string) string {
 		return "#20c997" // teal
 	case "session.ended", "session.checkpointed", "agent.improvement-note":
 		return "#6f42c1" // purple
+	case "agent.work-item.claimed":
+		return "#0d6efd" // blue — peer is now on it
+	case "agent.work-item.finished":
+		return "#198754" // green — work handed off (PR open)
 	}
 	return "#6c757d" // gray
 }
@@ -128,6 +132,10 @@ func eventTypeIcon(eventType string) string {
 		return "\U0001f534" // red circle
 	case "session.checkpointed":
 		return "\U0001f4cd" // round pushpin
+	case "agent.work-item.claimed":
+		return "\U0001f535" // blue circle 🔵
+	case "agent.work-item.finished":
+		return "✅" // white heavy check mark ✅
 	}
 	return ""
 }

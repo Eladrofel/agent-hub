@@ -37,10 +37,32 @@ import (
 // the gateway shipped before v0.1.9 plus any future curated type that doesn't
 // register a dedicated formatter here.
 func formatCuratedMessage(eventType string, agent *auth.Agent, summary string, payload map[string]any) string {
-	if eventType != "agent.improvement-note" {
-		return ""
+	switch eventType {
+	case "agent.improvement-note":
+		return formatImprovementNote(agent, summary, payload)
+	case "agent.work-item.claimed":
+		return formatWorkItem("\U0001f535", agent, summary) // 🔵
+	case "agent.work-item.finished":
+		return formatWorkItem("✅", agent, summary) // ✅
 	}
-	return formatImprovementNote(agent, summary, payload)
+	return ""
+}
+
+// formatWorkItem renders the chat-side line for an agent.work-item.{claimed,
+// finished} event. Shape:
+//
+//	🔵 <alias>: claimed <wi-key> (<repo>) [forced]
+//	✅ <alias>: finished <wi-key> (<repo>) — <pr-url>
+//
+// The summary text (composed agentctl-side in commands/work_item.go) already
+// carries the wi-key, repo, [forced] suffix, and PR URL. We just lead with
+// an icon + alias for chat scan-ability — same treatment as improvement-note.
+func formatWorkItem(icon string, agent *auth.Agent, summary string) string {
+	alias := "agent"
+	if agent != nil {
+		alias = callerDisplayName(agent)
+	}
+	return fmt.Sprintf("%s %s: %s", icon, alias, strings.TrimSpace(summary))
 }
 
 // formatImprovementNote renders the chat-side body for an agent.improvement-note
