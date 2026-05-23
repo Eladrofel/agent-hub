@@ -78,9 +78,17 @@ type InsertParams struct {
 // row) wins if non-empty; otherwise DefaultChannel applies. If both are
 // empty, no outbox row is written even for curated types — same as if the
 // event is non-curated. Caller is responsible for logging that case.
+//
+// Attachments (v0.1.10) are Mattermost message attachments forwarded into
+// outbox row props.attachments — the outbox-worker passes props through to
+// /api/v4/posts which renders them as the rich-card sidebar UX. Slice of
+// arbitrary maps so adapters in internal/outbox/ can compose the per-
+// backend shape (Mattermost / Slack / Discord) without this package
+// importing them. Empty / nil → no attachments, plain-text message only.
 type OutboxConfig struct {
 	ProjectChannel string
 	DefaultChannel string
+	Attachments    []map[string]any
 }
 
 // Insert writes one event and returns its uuid. Single-statement path.
@@ -170,6 +178,14 @@ func InsertWithOutbox(ctx context.Context, pool *pgxpool.Pool, p InsertParams, o
 				"event_type":      p.EventType,
 				"event_id":        id,
 				"idempotency_key": id + "_0",
+			}
+			if len(oc.Attachments) > 0 {
+				// Mattermost consumes props.attachments as an array of
+				// message-attachment objects (colored sidebar, fields,
+				// fallback). The outbox-worker is dumb and just forwards
+				// props; per-backend shape conversion happens here at
+				// enqueue time (or via the adapter selected by the caller).
+				props["attachments"] = oc.Attachments
 			}
 			if _, err := outbox.InsertPending(ctx, tx, outbox.InsertParams{
 				ProjectID: p.ProjectID,

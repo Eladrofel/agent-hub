@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -12,6 +13,23 @@ import (
 	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
 	"github.com/Eladrofel/agent-hub/gateway/internal/events"
 )
+
+// validIntents is the locked v0.1.10 enum for payload.intent. Mirrored on
+// the agentctl side (commands.ValidIntents) so both halves of the wire
+// validate the same set. Absent / empty payload.intent is treated as "info".
+var validIntents = map[string]bool{
+	"info":      true,
+	"directive": true,
+	"question":  true,
+	"blocker":   true,
+	"status":    true,
+}
+
+// directiveAuthorizedRole is the role required to emit intent=directive.
+// v0.1.10 single-tier check: only operators direct; peer agents collaborate
+// via info / question / blocker / status. This is the programmatic
+// enforcement of the v0.5.0 peer-coordination policy (previously norm-only).
+const directiveAuthorizedRole = "operator"
 
 // eventEmitRequest is the POST /v1/events body. Optional fields are
 // represented as zero-valued strings / nil maps so callers can omit them.
@@ -58,6 +76,31 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EventType == "" {
 		writeError(w, http.StatusBadRequest, "event_type_required", "field event_type is required")
+		return
+	}
+
+	// v0.1.10: validate payload.intent and enforce the directive-only-from-
+	// operator policy BEFORE any other work. Doing this ahead of sanitiser /
+	// resolution / insert keeps the unauthorized-directive path cheap and
+	// makes the audit log unambiguous (no half-written rows on rejection).
+	intent := extractIntent(req.Payload)
+	if intent != "" && !validIntents[intent] {
+		writeErrorWithDetails(w, http.StatusBadRequest, "invalid_intent",
+			fmt.Sprintf("payload.intent=%q invalid; must be one of info|directive|question|blocker|status (or omit for default 'info')", intent),
+			map[string]string{"intent": intent})
+		return
+	}
+	if intent == "directive" && agent.Role != directiveAuthorizedRole {
+		// 403 — the caller authenticated successfully but is not authorised
+		// to use this intent. Body includes the caller's actual role so the
+		// operator can spot mis-tagged agents, and a relative docs path
+		// pointing into the concept-workflow plugin's published policy.
+		writeErrorWithDetails(w, http.StatusForbidden, "directive_not_authorized",
+			fmt.Sprintf("only operators can emit intent=directive events; this caller is role=%s", agent.Role),
+			map[string]string{
+				"role": agent.Role,
+				"docs": "references/peer-coordination-policy.md",
+			})
 		return
 	}
 
@@ -196,4 +239,18 @@ func stringPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// extractIntent reads payload.intent without erroring on a non-string value
+// (we still want the request to flow if the caller mis-typed; the strict
+// enum check in handleEventEmit will catch unknown strings). A non-string
+// payload.intent is treated as "" → default "info" semantics.
+func extractIntent(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if v, ok := payload["intent"].(string); ok {
+		return v
+	}
+	return ""
 }

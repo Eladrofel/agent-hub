@@ -5,12 +5,35 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Eladrofel/agent-hub/gateway/internal/agentctl/audit"
 	"github.com/Eladrofel/agent-hub/gateway/internal/agentctl/client"
 )
+
+// ValidIntents is the locked enum for the v0.1.10 --intent flag exposed by
+// emit-style subcommands. Threaded into the event payload at `payload.intent`;
+// absent / empty means the gateway treats it as "info". Gateway-side
+// enforcement (handlers_events.go) requires role=operator for intent=directive.
+// See references/peer-coordination-policy.md (informational doc URL surfaced
+// in the gateway's 403 response).
+var ValidIntents = []string{"info", "directive", "question", "blocker", "status"}
+
+// validateIntent checks --intent against the locked enum. Empty is allowed
+// (gateway treats absent as "info"); any non-empty value MUST be in
+// ValidIntents or we surface a validation error before hitting the gateway.
+func validateIntent(intent string) error {
+	if intent == "" {
+		return nil
+	}
+	if !containsString(ValidIntents, intent) {
+		return fmt.Errorf("--intent=%q invalid; must be one of %s",
+			intent, strings.Join(ValidIntents, ", "))
+	}
+	return nil
+}
 
 // NewEventCmd is the `event` group; today it has only one subcommand.
 func NewEventCmd() *cobra.Command {
@@ -40,6 +63,7 @@ func newEventEmitCmd() *cobra.Command {
 		actorType       string
 		actorName       string
 		worktreePath    string
+		intent          string
 	)
 
 	cmd := &cobra.Command{
@@ -59,6 +83,13 @@ func newEventEmitCmd() *cobra.Command {
 
 			if eventType == "" {
 				err := validationError(cmd, auditor, "event emit", fmt.Errorf("--type is required"))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
+			}
+			if err := validateIntent(intent); err != nil {
+				err := validationError(cmd, auditor, "event emit", err)
 				if IsSilent(err) {
 					return nil
 				}
@@ -110,6 +141,18 @@ func newEventEmitCmd() *cobra.Command {
 				if err := json.Unmarshal([]byte(payloadJSON), &pl); err != nil {
 					return fmt.Errorf("--json-payload: invalid JSON: %w", err)
 				}
+				body["payload"] = pl
+			}
+			// --intent lives at payload.intent (v0.1.10). Empty omits the
+			// field entirely so the gateway's "absent → info" contract
+			// holds. If --json-payload also sets payload.intent the flag
+			// takes precedence — the flag is the explicit signal.
+			if intent != "" {
+				pl, _ := body["payload"].(map[string]any)
+				if pl == nil {
+					pl = map[string]any{}
+				}
+				pl["intent"] = intent
 				body["payload"] = pl
 			}
 			if artefactJSON != "" {
@@ -188,6 +231,9 @@ func newEventEmitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&actorType, "actor-type", "", "actor type")
 	cmd.Flags().StringVar(&actorName, "actor-name", "", "actor name")
 	cmd.Flags().StringVar(&worktreePath, "worktree-path", "", "worktree path")
+	cmd.Flags().StringVar(&intent, "intent", "",
+		fmt.Sprintf("event intent (one of: %s); absent = info; gateway requires role=operator for 'directive'",
+			strings.Join(ValidIntents, ", ")))
 	cmd.Flags().Bool("json", false, "emit the full response body on stdout (default: stderr summary)")
 
 	return cmd

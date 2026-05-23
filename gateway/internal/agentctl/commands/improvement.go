@@ -80,6 +80,7 @@ func newImprovementEmitCmd() *cobra.Command {
 		contextStr  string
 		propagation string
 		details     string
+		intent      string
 	)
 
 	cmd := &cobra.Command{
@@ -121,6 +122,13 @@ func newImprovementEmitCmd() *cobra.Command {
 			}
 			if !containsString(ImprovementPropagation, propagation) {
 				err := validationError(cmd, auditor, "improvement emit", fmt.Errorf("--propagation=%q invalid; must be one of %s", propagation, strings.Join(ImprovementPropagation, ", ")))
+				if IsSilent(err) {
+					return nil
+				}
+				return err
+			}
+			if err := validateIntent(intent); err != nil {
+				err := validationError(cmd, auditor, "improvement emit", err)
 				if IsSilent(err) {
 					return nil
 				}
@@ -173,6 +181,13 @@ func newImprovementEmitCmd() *cobra.Command {
 			}
 			if details != "" {
 				payload["details"] = details
+			}
+			// v0.1.10: --intent flag threads into the payload.intent field.
+			// Absent / empty omits the field so the gateway's "absent → info"
+			// contract holds. The gateway-side role check enforces
+			// directive-only-from-operator regardless of event_type.
+			if intent != "" {
+				payload["intent"] = intent
 			}
 
 			body := map[string]any{
@@ -239,6 +254,9 @@ func newImprovementEmitCmd() *cobra.Command {
 		fmt.Sprintf("propagation hint (%s); 'fleet' is reserved and treated as 'mm' in v0.1.9", strings.Join(ImprovementPropagation, "|")))
 	cmd.Flags().StringVar(&details, "details", "",
 		"optional longer body; prefix with @ to read from a file (e.g. --details @./notes.md)")
+	cmd.Flags().StringVar(&intent, "intent", "",
+		fmt.Sprintf("event intent (one of: %s); absent = info; gateway requires role=operator for 'directive'",
+			strings.Join(ValidIntents, ", ")))
 	cmd.Flags().Bool("json", false, "emit the full response body on stdout (default: stderr summary)")
 
 	return cmd
