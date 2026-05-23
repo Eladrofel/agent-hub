@@ -367,6 +367,63 @@ func ResolveSessionID(ctx context.Context, pool *pgxpool.Pool, claudeSessionID s
 	return &id, nil
 }
 
+// PeerMentionsForProject returns a space-separated "@<alias1> @<alias2>"
+// string of OTHER agents who have had a session in this project and have been
+// seen within the last 24 hours. Used by handleEventEmit (v0.1.15+) to prepend
+// peer mentions to chat-relayed work-item.claimed / work-item.finished events
+// so peers get proactive inbox notification (vs. silently relying on each
+// peer to query the event store before acting).
+//
+// Returns "" (no error) when:
+//   - projectID is nil
+//   - no peers match the criteria (single-agent project, all peers stale,
+//     all peers lack a mattermost_username)
+//
+// The lead "@" is load-bearing for the MM outgoing-webhook → inbox-webhook
+// path (`trigger_when=1` requires first-word-@ per the v0.5.0 e2e finding).
+// Callers that prepend this string MUST keep the @ leading the entire post.
+func PeerMentionsForProject(ctx context.Context, pool *pgxpool.Pool, projectID *string, excludeAgentID string) (string, error) {
+	if projectID == nil {
+		return "", nil
+	}
+	const q = `
+		SELECT DISTINCT a.mattermost_username
+		  FROM agents a
+		  JOIN agent_sessions s ON s.agent_id = a.id
+		 WHERE s.project_id = $1
+		   AND a.id <> $2
+		   AND a.mattermost_username IS NOT NULL
+		   AND a.mattermost_username <> ''
+		   AND a.last_seen_at > now() - interval '24 hours'`
+	rows, err := pool.Query(ctx, q, *projectID, excludeAgentID)
+	if err != nil {
+		return "", fmt.Errorf("peer mentions query: %w", err)
+	}
+	defer rows.Close()
+	var mentions []string
+	for rows.Next() {
+		var alias string
+		if err := rows.Scan(&alias); err != nil {
+			return "", fmt.Errorf("peer mentions scan: %w", err)
+		}
+		mentions = append(mentions, "@"+alias)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("peer mentions rows: %w", err)
+	}
+	if len(mentions) == 0 {
+		return "", nil
+	}
+	out := ""
+	for i, m := range mentions {
+		if i > 0 {
+			out += " "
+		}
+		out += m
+	}
+	return out, nil
+}
+
 func coalesceMap(m map[string]any) map[string]any {
 	if m == nil {
 		return map[string]any{}

@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.15] — 2026-05-23
+
+Proactive peer @-mentions on `agent.work-item.{claimed,finished}` events. Pairs with **plugin v0.5.5** (peer-coordination policy update banning operator-courier laundering). Closes the v0.5.4 real-work-test finding: Mikey claimed task-02-onboarding-stepper-scaffold correctly, but Donnie was concurrently planning a duplicate dispatch because the channel-only claim event didn't reach Donnie's inbox proactively.
+
+### Added — `events.PeerMentionsForProject` helper
+
+- New function in `internal/events/events.go` returning a space-separated `@<alias1> @<alias2>` string of other agents who (a) have had a session in the given project, (b) have a `mattermost_username` set, (c) have `last_seen_at` within the last 24 hours, (d) are not the claiming agent. Returns `""` for single-agent projects or fully stale-peer projects.
+- Lead `@` is load-bearing for the existing outgoing-webhook → inbox-webhook routing (`trigger_when=1` requires first-word-@ per the v0.5.0 e2e finding). Callers MUST keep the prefix leading the entire post.
+
+### Updated — `handleEventEmit` prepends mentions for work-item events
+
+- After `formatCuratedMessage` composes the chat line, the handler now calls `PeerMentionsForProject` when `event_type ∈ {agent.work-item.claimed, agent.work-item.finished}` and prepends the result. Resulting outbox lines:
+  ```
+  @Donnie @Splinter 🔵 Mikey: claimed feat-04-bulk-import (customer-web)
+  @Donnie @Splinter ✅ Mikey: finished feat-04-bulk-import (customer-web) — <pr-url>
+  ```
+- Soft-fail: if the peer-mentions query errors, the handler logs a warning and proceeds without mentions (the durable event still writes; only the proactive notification is lost). Same posture as other non-blocking enrichment steps.
+- 24-hour activity window deliberately filters retired/stale VMs out of the notification fanout. Stale-VM safety on the OTHER side (a VM that wakes up and tries to claim already-claimed work) is still handled by the `/start-work-item` Pre-flight 4 active-claims check from v0.5.4.
+
+### Smoke (operator + claude-1 + claude-2, 2026-05-23)
+
+- claude-1/Mikey claimed `feat-test-96-mentions` → outbox row text was `@Donnie @Splinter 🔵 Mikey: claimed feat-test-96-mentions (customer-web)`. ✓
+- Outbox worker posted; MM outgoing-webhook fired (because of leading @); inbox-webhook routed to both Donnie's and Splinter's inboxes. ✓
+- `agentctl inbox poll` on agent-2 (Donnie) AND agent-operator-mac (Splinter) both returned the message, each with their own `target_agent_id`. ✓
+- Symmetric `agent.work-item.finished` event also @-mentions the same peer set. ✓
+
+### Not addressed (deferred)
+
+- TTL / heartbeat-based "stale peer" handling for the 24h activity window — if pain surfaces (e.g. a long-weekend-quiet VM not getting pinged on Monday claims), revisit.
+- Cross-project mention spillover — the query is strictly scoped to `s.project_id = $1`, so a peer that has only ever sessioned in project-A would not be pinged for project-B claims even if it currently has activity in project-B. This is the right default but worth flagging as a known shape.
+
+### Tests
+
+- All existing gateway tests still pass. New helper exercised via the live smoke above; a DB-fixture integration test for `PeerMentionsForProject` is a v0.1.16 follow-up (same posture as other peer-introspection helpers in this package).
+
+`go build ./...` clean. `go vet ./...` clean.
+
 ## [0.1.14] — 2026-05-23
 
 Work-item peer-coordination event types + read endpoint. Pairs with **plugin v0.5.4** which adds the `/start-work-item` active-claim pre-flight, the `--force-claim` override, and the symmetric `/finish-work-item` finish-emit. Closes Dale's 2026-05-23 peer-awareness gap (two agents on different VMs could silently race the same `<work-item-key>`; only signal was a Mode-3-only Mattermost heads-up gated on `CONCEPT_CHAT_MM_URL`).

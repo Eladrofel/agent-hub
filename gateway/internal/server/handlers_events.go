@@ -186,6 +186,30 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 	// that don't render attachments + as the outbox row's `message` text.
 	outboxMessage := formatCuratedMessage(req.EventType, agent, req.Summary, req.Payload)
 
+	// v0.1.15 — prepend peer @-mentions for work-item events so other active
+	// agents in the project receive inbox notification (via the existing
+	// outgoing-webhook → inbox-webhook → agent-inbox routing). Without this,
+	// claim events sit in the channel until each peer manually polls.
+	if req.EventType == "agent.work-item.claimed" || req.EventType == "agent.work-item.finished" {
+		mentions, merr := events.PeerMentionsForProject(r.Context(), a.Store.Pool, projectID, agent.ID)
+		if merr != nil {
+			// Soft-fail: the event itself still writes; we just lose the
+			// proactive peer notification. Worth a warn-level log so the
+			// drift is visible in gateway logs.
+			a.Logger.Warn("peer mentions lookup failed; emitting without mentions",
+				"event_type", req.EventType, "err", merr)
+		} else if mentions != "" {
+			// MM outgoing-webhook trigger_when=1 needs first-word-@. Prepend
+			// the mentions to the existing line (formatCuratedMessage already
+			// leads with the icon, but @-mentions take precedence for routing).
+			if outboxMessage != "" {
+				outboxMessage = mentions + " " + outboxMessage
+			} else {
+				outboxMessage = mentions
+			}
+		}
+	}
+
 	// v0.1.10 — build the rich attachment via the MM adapter. The
 	// outbox-worker forwards props.attachments to Mattermost natively
 	// (Slack/Discord adapters live in the same package for future
