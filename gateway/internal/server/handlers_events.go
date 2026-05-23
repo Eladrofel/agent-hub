@@ -12,6 +12,7 @@ import (
 
 	"github.com/Eladrofel/agent-hub/gateway/internal/auth"
 	"github.com/Eladrofel/agent-hub/gateway/internal/events"
+	"github.com/Eladrofel/agent-hub/gateway/internal/outbox"
 )
 
 // validIntents is the locked v0.1.10 enum for payload.intent. Mirrored on
@@ -158,9 +159,12 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 		ArtefactPointer: req.ArtefactPointer,
 	}
 
-	// Resolve the per-project Mattermost outbox channel (may be empty —
-	// caller falls back to the operator-level default in that case).
+	// Resolve the per-project Mattermost outbox channel + slug (may be
+	// empty — caller falls back to the operator-level default channel,
+	// and an empty slug just means no project label in the attachment
+	// title).
 	projectChannel := ""
+	projectSlug := ""
 	if projectID != nil {
 		pc, perr := events.ResolveProjectChannel(r.Context(), a.Store.Pool, projectID)
 		if perr != nil {
@@ -169,19 +173,51 @@ func (a *App) handleEventEmit(w http.ResponseWriter, r *http.Request) {
 		} else {
 			projectChannel = pc
 		}
+		ps, serr := events.ResolveProjectSlug(r.Context(), a.Store.Pool, projectID)
+		if serr != nil {
+			a.Logger.Warn("resolve project slug failed; attachment title omits @project",
+				"project_id", *projectID, "err", serr)
+		} else {
+			projectSlug = ps
+		}
 	}
 
-	// Per-event-type curated formatter. For most curated types we let
-	// events.InsertWithOutbox compose the default "[event_type] summary"
-	// message; v0.1.9 added agent.improvement-note which gets a dedicated
-	// "💡 <alias>: <summary>" shape so operators can pick learnings out of
-	// the lifecycle stream at a glance.
+	// Per-event-type curated formatter — line-based fallback for clients
+	// that don't render attachments + as the outbox row's `message` text.
 	outboxMessage := formatCuratedMessage(req.EventType, agent, req.Summary, req.Payload)
+
+	// v0.1.10 — build the rich attachment via the MM adapter. The
+	// outbox-worker forwards props.attachments to Mattermost natively
+	// (Slack/Discord adapters live in the same package for future
+	// activation but the runtime backend is hard-coded to MM today).
+	// `intent` is already validated + extracted earlier in this handler.
+	alias := agent.Alias
+	if alias == "" {
+		alias = agent.Name
+	}
+	summaryText := req.Summary
+	adapter := outbox.AdapterFor("mattermost")
+	attachmentProps, ferr := adapter.FormatEvent(outbox.FormatterInputs{
+		EventType:   req.EventType,
+		Alias:       alias,
+		ProjectSlug: projectSlug,
+		Summary:     summaryText,
+		Intent:      intent,
+		Payload:     req.Payload,
+	})
+	var attachments []map[string]any
+	if ferr != nil {
+		a.Logger.Warn("adapter FormatEvent failed; falling back to line-only outbox row",
+			"event_type", req.EventType, "err", ferr)
+	} else if raw, ok := attachmentProps["attachments"].([]map[string]any); ok {
+		attachments = raw
+	}
 
 	id, err := events.InsertWithOutbox(r.Context(), a.Store.Pool, params,
 		events.OutboxConfig{
 			ProjectChannel: projectChannel,
 			DefaultChannel: a.MattermostDefaultOutbox,
+			Attachments:    attachments,
 		},
 		outboxMessage,
 	)

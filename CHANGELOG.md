@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.10] — 2026-05-23
+
+Visual + programmatic enforcement of the v0.5.0 peer-coordination policy plus rich Mattermost surface for the team-awareness event stream. Pairs with plugin **v0.5.1** (which threads `--intent` through `/note-improvement` + corrects the v0.5.0 §7.11.2 doc).
+
+### Added — `intent` field on events (programmatic enforcement)
+
+- **`--intent <info|directive|question|blocker|status>`** flag on `agentctl event emit` + `agentctl improvement emit`. Parse-time enum validation with clear error listing valid values. Default omitted → server treats as `info`. Stored in event payload as `payload.intent` (no DB schema change — JSONB).
+- **Gateway enforcement** on `POST /v1/events`: when `payload.intent == "directive"` AND the caller's `agents.role != "operator"`, reject with `403 Forbidden` body `{"error":"directive_not_authorized","message":"...","docs":"references/peer-coordination-policy.md"}`. Other intents (`info|question|blocker|status`) accept from any role — they're context/severity hints, not authority claims. This is the programmatic backbone of the peer-coord policy: peers collaborate via info, only operators direct.
+- 10 new tests across agentctl + gateway: operator directive 201, non-operator directive 403, non-operator info 201, absent intent 201, invalid intent value 400, agentctl-side enum validation cases.
+
+### Added — pluggable message adapter framework (`gateway/internal/outbox/adapters.go`, 327 LOC)
+
+- **`MessageAdapter` interface** with `FormatEvent(FormatterInputs) (map[string]any, error)` + `Backend() string`. Three concrete impls:
+  - **`MattermostAdapter`** — produces `props.attachments` matching MM's message-attachment API (colored sidebar + icon-in-title + fallback text + extensible fields).
+  - **`SlackAdapter`** — legacy attachments API, near-identical shape.
+  - **`DiscordAdapter`** — embeds (color hex→decimal conversion, `description`/`title` field renaming).
+- **Color resolution** (precedence): intent → event_type → default gray. Intent map: `info=#0d6efd` blue, `directive=#fd7e14` orange (operator authority), `question=#ffc107` yellow, `blocker=#dc3545` red, `status=#6c757d` gray. Event-type fallback: `session.started=#20c997` teal, `session.ended/checkpointed=#6f42c1` purple, `improvement-note=#6f42c1` purple.
+- **Icon resolution** (precedence): `improvement-note→💡` (preserves v0.1.9), else intent icon (`info=ℹ️`, `directive=⚡`, `question=❓`, `blocker=🚫`, `status=📊`), else event-type fallback (`session.started=🟢`, `session.ended=🔴`, `checkpointed=📍`).
+- **`AdapterFor(backend)`** selector — defaults to MM. Slack + Discord adapters are inert at runtime until the worker is taught to pick between them (v0.1.11+); their tests assert correct output shape against a fixture event.
+
+### Added — project visibility in MM attachments
+
+- **`events.ResolveProjectSlug`** helper (mirrors existing `ResolveProjectChannel`) — single-row lookup of `projects.slug` by `project_id`. Empty when project_id is nil or row missing.
+- **MM attachment title** format: `<icon> <alias> @ <project_slug>` when slug is non-empty; falls back to `<icon> <alias>` when not. Multi-project fleets now see at-a-glance which project each curated event belongs to: e.g., `💡 Splinter @ secureup: Discovered ...` vs the bare `Splinter: Discovered ...` of v0.1.9.
+- Alias resolution prefers `agent.alias` (Mikey / Donnie / Splinter); falls back to canonical name.
+
+### Wired through — `POST /v1/events` calls the MM adapter at enqueue time
+
+- `handlers_events.go` resolves project channel + slug, calls `outbox.AdapterFor("mattermost").FormatEvent(...)`, extracts the `attachments` array, passes via the new `events.OutboxConfig.Attachments` field. The outbox-worker forwards `props.attachments` to Mattermost natively — no worker-side changes needed (the v0.1.4 props pass-through path handles it).
+- Line-based `formatCuratedMessage` from v0.1.9 still runs — its output becomes the outbox row's `message` text (the fallback for attachment-unaware clients + the sanitiser-blocked placeholder path).
+- On adapter `FormatEvent` failure: log a warning, fall back to plain-text-only outbox row (no attachments). Never blocks the event-write.
+
+### Backwards compatibility
+
+- Existing wire formats unchanged for callers that don't set `--intent`.
+- Sanitiser still applies to the full attachment JSON; `sanitiser.blocked` placeholder path unchanged.
+- v0.1.9 `agent.improvement-note` 💡 icon preserved via the icon-resolution precedence rule.
+
+### Tests
+
+- 209 LOC of intent-enforcement integration tests (`handlers_events_intent_test.go`).
+- 187 LOC of agentctl-side intent enum tests (`intent_test.go`).
+- Adapter unit tests cover all three backends' output shape against fixture events.
+
+`go build ./...` clean. `go vet ./...` clean. All packages pass `go test ./...`.
+
 ## [0.1.9] — 2026-05-23
 
 First-class support for **captured learnings** as fleet data. Dale's

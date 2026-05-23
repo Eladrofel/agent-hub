@@ -296,6 +296,27 @@ func ResolveProjectChannel(ctx context.Context, pool *pgxpool.Pool, projectID *s
 	return *ch, nil
 }
 
+// ResolveProjectSlug returns the project's slug (may be empty if project_id
+// is nil or row missing). v0.1.10 — surfaces project context in MM
+// attachment titles so multi-project fleets are unambiguous in the chat
+// channel ("Splinter @ secureup: ..." vs bare "Splinter: ...").
+func ResolveProjectSlug(ctx context.Context, pool *pgxpool.Pool, projectID *string) (string, error) {
+	if projectID == nil {
+		return "", nil
+	}
+	var slug string
+	err := pool.QueryRow(ctx,
+		`SELECT slug FROM projects WHERE id = $1`,
+		*projectID).Scan(&slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return slug, nil
+}
+
 // ResolveTaskID looks up a task by key, optionally scoped to a project.
 func ResolveTaskID(ctx context.Context, pool *pgxpool.Pool, projectID *string, taskKey string) (*string, error) {
 	if taskKey == "" {
