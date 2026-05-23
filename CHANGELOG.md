@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.12] — 2026-05-23
+
+Cross-/clear handoff UX fix. v0.1.11 closed the data-plane gap (improvement-notes get tagged with `agent_session_id`, `tool.used` filtered from `recent_events`, `recent_improvements` surfaces cross-cutting learnings) but Dale's same-day empirical test surfaced the next bottleneck: post-/clear, Claude Code mints a brand-new `$CLAUDE_SESSION_ID`, so an in-shell `agentctl resume-context` queries the new (empty) session instead of the prior one. The operator had to manually paste the old id. v0.1.12 removes that friction with a no-flag auto-fallback that asks the gateway "what was this agent's most recent session?" and threads the answer through. Also brings `agentctl checkpoint` into parity with v0.1.11's env-var fallback (the only emit-style subcommand still requiring an explicit flag).
+
+### Added — `GET /v1/agents/{name_or_alias}/latest-session` endpoint
+
+- New admin-token-protected endpoint that returns the most-recent `agent_sessions` row for the named agent. Resolution is case-INSENSITIVE on `agents.name` first, then `mattermost_username` (alias) — same lookup contract as v0.1.8's `inbox.webhook.resolveAgent` #45 fix, so `/v1/agents/Splinter/latest-session`, `/v1/agents/splinter/latest-session`, and `/v1/agents/agent-operator-mac/latest-session` all resolve to the same row.
+- Response shape: `{agent_id, agent_name, alias?, latest_session: {claude_session_id, started_at, ended_at, status, start_reason?}}`. 404 with `error="unknown_agent"` when the name/alias doesn't resolve; 404 with `error="no_sessions"` when the agent exists but has zero sessions (or none pass the exclude filter).
+- Optional `?exclude=<claude_session_id>` query param — when set, the named session is skipped and the next-most-recent returned. This is the load-bearing query for the post-/clear case: the operator's new shell already knows its own `$CLAUDE_SESSION_ID` and wants the SESSION-BEFORE-THIS-ONE, not its own brand-new (empty) shell.
+- Implementation: new `sessions.LatestForAgent(ctx, pool, agentID, excludeClaudeSessionID)` helper in `internal/sessions/sessions.go`, new `handleAgentLatestSession` + shared `resolveAgentByHandle` (case-insensitive name-then-alias resolver) in `internal/server/handlers_agents.go`, single route registration in `router.go` under the existing admin-token middleware group.
+- No DB schema change. Reads against the existing `agent_sessions` + `agents` tables.
+
+### Added — `agentctl resume-context` no-flag fallback + `--prior` flag
+
+- **No-flag fallback** — when invoked without `--claude-session-id` AND with `$CLAUDE_SESSION_ID` env unset, `agentctl resume-context` now auto-discovers this agent's most-recent session by calling `GET /v1/agents/{$AGENT_NAME}/latest-session` and threading the discovered id into the existing `/v1/sessions/{id}/resume-context` query. Pre-v0.1.12 the same invocation halted with `"--claude-session-id is required"` even though the gateway had the answer one query away.
+- **`--prior` flag** — when set, the fallback path runs EVEN IF `$CLAUDE_SESSION_ID` is set, and passes the current env value through as `?exclude=…`. This is the canonical post-/clear invocation: a freshly /clear'd Claude Code session has a useless new `$CLAUDE_SESSION_ID`, the operator wants the prior one. Picked `--prior` over `--exclude-current-session-id` for terse readability; the flag's help text spells out the semantics.
+- Explicit `--claude-session-id flag` still wins outright — bypasses the fallback path entirely, preserves v0.1.11 behavior for callers that already have the id in hand.
+- `$AGENT_NAME` is now required for the fallback path (already required by `loadAuthedConfig` for every authed subcommand, but the fallback re-checks + surfaces a user-actionable error if the env is somehow empty at the call site).
+- Precedence summary: `--claude-session-id flag` > `$CLAUDE_SESSION_ID env` > **NEW** auto-fallback via `latest-session` endpoint. The `--prior` flag flips the second-and-third rules into "always run the fallback, pass env through as exclude".
+
+### Fixed — `agentctl checkpoint` reads `$CLAUDE_SESSION_ID` env (consistency with v0.1.11)
+
+- `agentctl checkpoint` now uses the shared `resolveClaudeSessionID` helper (v0.1.11) so flag-empty invocations transparently pick up `$CLAUDE_SESSION_ID` from the Claude Code tool context, matching the behavior already shipped on `improvement emit` + `event emit`. Pre-v0.1.12 the checkpoint subcommand was the only emit-style path still requiring an explicit `--claude-session-id` flag — operators had to remember to plumb it through manually inside Claude tool calls or hit `"--claude-session-id is required"`. Help text updated to reflect the env fallback.
+- No behavior change for callers that pass the explicit flag — flag still wins over env.
+
+### Why (Dale's 2026-05-23 cross-/clear test)
+
+Dale tested the full cross-/clear handoff path on 2026-05-23 and confirmed the v0.1.11 fixes work end-to-end: a checkpoint emitted in session A is recoverable from session B's resume-context query, with rich structure (latest_checkpoint preserved, recent_events filtered, recent_improvements populated). BUT the operator UX still required pasting the prior session id by hand because Claude Code mints a fresh `$CLAUDE_SESSION_ID` on /clear and the in-shell `agentctl resume-context` invocation has no way to know which prior session to ask about. Dale's exact request: "I need a skill like `/resume-context` that can go pick up the previous session-id" — and the agentctl side has to support no-flag invocation for that. v0.1.12 supplies the agentctl side; the plugin's `/resume-context` skill can now just invoke `agentctl resume-context --prior` and the gateway figures out the rest.
+
+### Tests
+
+- 3 new agentctl tests in `commands_test.go`: `TestResumeContext_NoFlag_FallsBackToLatestSession` (no flag + no env → two-call sequence, first to latest-session, second to resume-context with the discovered id, no `?exclude=`); `TestResumeContext_PriorFlag_PassesExcludeFromEnv` (--prior + env set → first call has `?exclude=<env>`, second call uses the gateway-discovered prior id); `TestResumeContext_ExplicitFlagSkipsFallback` (explicit flag bypasses fallback even with empty env → single call directly to resume-context).
+- 2 new agentctl tests for `checkpoint` env-fallback parity: `TestCheckpoint_FallsBackToCLAUDESESSIONIDEnv`, `TestCheckpoint_FlagWinsOverEnv`.
+- 6 new integration tests in `handlers_agents_test.go` (DB-gated like the rest of `internal/server`): returns-most-recent ordering, exclude filtering, 404 on unknown agent, 404 on agent-with-zero-sessions, case-insensitive alias resolution + alias field in response, 401 on missing admin auth.
+- All existing tests continue to pass without modification — the resume-context flag/env path is unchanged for callers that supplied either; the new endpoint is JSON-additive admin-only.
+
+`go build ./...` clean. `go vet ./...` clean. All packages pass `go test ./...`.
+
 ## [0.1.11] — 2026-05-23
 
 Cross-/clear handoff bugfix. End-of-day empirical test by Dale on 2026-05-23 found that `agentctl improvement emit` did NOT tag events with `agent_session_id`, so improvement-notes landed session-orphaned and were invisible to `resume-context` queries. Combined with `recent_events` being dominated by `tool.used` noise (19/20 events), cross-/clear lost all captured learnings — including the load-bearing peer-coordination principle. v0.1.11 fixes the emit-side tagging bug, filters tool.used from the default resume-context tail, and adds a new `recent_improvements` field that surfaces cross-cutting fleet learnings regardless of which session they were emitted from.
