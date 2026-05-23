@@ -63,6 +63,8 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 
 			// Operator-only query endpoints (issue #43).
 			r.Get("/agents", app.handleAgentsList)
+			// v0.1.12 — backs the `agentctl resume-context` no-flag fallback.
+			r.Get("/agents/{name_or_alias}/latest-session", app.handleAgentLatestSession)
 			r.Get("/events", app.handleEventsList)
 			r.Get("/health/full", app.handleHealthFull)
 		})

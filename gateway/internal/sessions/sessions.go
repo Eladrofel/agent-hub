@@ -114,6 +114,38 @@ func End(ctx context.Context, pool *pgxpool.Pool, claudeSessionID string) (*Sess
 	return s, nil
 }
 
+// LatestForAgent returns the most-recent agent_sessions row for the given
+// agent_id, optionally excluding one claude_session_id (used by the post-/clear
+// fallback: the operator is in a NEW session and wants the PRIOR one). Returns
+// pgx.ErrNoRows when the agent has zero sessions (or the only one matches the
+// excludeClaudeSessionID filter).
+//
+// Added in v0.1.12 for the `agentctl resume-context` no-flag fallback. See
+// `gateway/internal/server/handlers_agents.go::handleAgentLatestSession` for
+// the response contract.
+func LatestForAgent(ctx context.Context, pool *pgxpool.Pool, agentID, excludeClaudeSessionID string) (*Session, error) {
+	if agentID == "" {
+		return nil, errors.New("agent_id required")
+	}
+	const qBase = `
+		SELECT id, claude_session_id, agent_id, project_id, vm_hostname,
+		       cwd, worktree_path, branch, base_branch, git_head_sha,
+		       start_reason, status, started_at, ended_at, metadata
+		  FROM agent_sessions
+		 WHERE agent_id = $1`
+	const qOrder = `
+		 ORDER BY started_at DESC
+		 LIMIT 1`
+
+	if excludeClaudeSessionID != "" {
+		row := pool.QueryRow(ctx, qBase+`
+		   AND claude_session_id <> $2`+qOrder, agentID, excludeClaudeSessionID)
+		return scanSession(row)
+	}
+	row := pool.QueryRow(ctx, qBase+qOrder, agentID)
+	return scanSession(row)
+}
+
 // GetByClaudeSessionID is the lookup primitive used by resume-context.
 func GetByClaudeSessionID(ctx context.Context, pool *pgxpool.Pool, claudeSessionID string) (*Session, error) {
 	const q = `
