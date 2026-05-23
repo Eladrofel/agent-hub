@@ -531,7 +531,7 @@ func TestResumeContext_PrettyFlagIndents(t *testing.T) {
 // resume-context — v0.1.12 no-flag fallback + --prior cases. These use a
 // fresh httptest.Server inside the test (not the single-call fixture) because
 // the fallback path makes TWO sequential calls:
-//   1) GET /v1/agents/{name}/latest-session
+//   1) GET /v1/me/latest-session  (self-scoped; v0.1.13 endpoint)
 //   2) GET /v1/sessions/{id}/resume-context
 // We need per-path response routing + call-sequence assertion that the
 // single-shot fixture can't express.
@@ -543,7 +543,7 @@ func TestResumeContext_NoFlag_FallsBackToLatestSession(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
-		case "/v1/agents/agent-test/latest-session":
+		case "/v1/me/latest-session":
 			w.WriteHeader(200)
 			_, _ = w.Write([]byte(`{"agent_id":"a-1","agent_name":"agent-test","latest_session":{"claude_session_id":"prior-session-99","status":"ended","started_at":"2026-05-23T10:00:00Z"}}`))
 		case "/v1/sessions/prior-session-99/resume-context":
@@ -582,7 +582,7 @@ func TestResumeContext_NoFlag_FallsBackToLatestSession(t *testing.T) {
 	if len(paths) != 2 {
 		t.Fatalf("expected 2 HTTP calls, got %d: %v", len(paths), paths)
 	}
-	if !strings.HasPrefix(paths[0], "/v1/agents/agent-test/latest-session") {
+	if !strings.HasPrefix(paths[0], "/v1/me/latest-session") {
 		t.Fatalf("call 1 path = %s", paths[0])
 	}
 	// No --prior → no ?exclude
@@ -601,7 +601,7 @@ func TestResumeContext_PriorFlag_PassesExcludeFromEnv(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
-		case "/v1/agents/agent-test/latest-session":
+		case "/v1/me/latest-session":
 			w.WriteHeader(200)
 			_, _ = w.Write([]byte(`{"latest_session":{"claude_session_id":"prior-session-77"}}`))
 		case "/v1/sessions/prior-session-77/resume-context":

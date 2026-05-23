@@ -54,6 +54,9 @@ func NewRouter(app *App, extraMiddleware func(http.Handler) http.Handler) chi.Ro
 			r.Post("/sessions/checkpoint", app.handleSessionCheckpoint)
 			r.Post("/sessions/end", app.handleSessionEnd)
 			r.Get("/sessions/{claude_session_id}/resume-context", app.handleSessionResumeContext)
+			// v0.1.13 — self-scoped latest-session lookup for the /resume-context skill.
+			// Per-host bearer only (no admin required); operates on caller.ID.
+			r.Get("/me/latest-session", app.handleMeLatestSession)
 			r.Get("/inbox", app.handleInboxPoll)
 		})
 		// Admin endpoints (ADMIN_TOKEN env var).

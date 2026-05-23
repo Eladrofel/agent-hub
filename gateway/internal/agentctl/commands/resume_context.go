@@ -99,22 +99,18 @@ type latestSessionResponse struct {
 	} `json:"latest_session"`
 }
 
-// resolveLatestSession calls GET /v1/agents/{$AGENT_NAME}/latest-session and
-// returns the discovered claude_session_id. excludeID is passed through as
-// ?exclude=… so --prior callers get the session BEFORE their current one.
-// Halts with a user-actionable error when $AGENT_NAME is unset (the fallback
-// path has no other way to know which agent's history to query).
+// resolveLatestSession calls GET /v1/me/latest-session and returns the
+// discovered claude_session_id. excludeID is passed through as ?exclude=…
+// so --prior callers get the session BEFORE their current one. Uses the
+// self-lookup endpoint (v0.1.13) — per-host bearer only, no admin token
+// required — so non-operator peers can also use the no-flag fallback.
+// The agent identity is resolved server-side from the bearer; agentName
+// is no longer needed for the path but kept in the signature for log
+// context.
 func resolveLatestSession(ctx context.Context, cl *client.Client, cfg *config.Config, excludeID string, prior bool) (string, error) {
-	agentName := cfg.AgentName
-	if agentName == "" {
-		// loadAuthedConfig already requires this, but the env may have
-		// been unset between config-load and here in pathological cases;
-		// surface a precise error instead of a confused 404.
-		return "", fmt.Errorf("resume-context fallback needs %s env var (no --claude-session-id, no $%s)",
-			config.EnvAgentName, claudeSessionIDEnv)
-	}
+	_ = cfg // agentName not needed for /v1/me/latest-session; server resolves identity from bearer
 
-	path := "/v1/agents/" + url.PathEscape(agentName) + "/latest-session"
+	path := "/v1/me/latest-session"
 	if prior && excludeID != "" {
 		path += "?exclude=" + url.QueryEscape(excludeID)
 	}

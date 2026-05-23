@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.13] — 2026-05-23
+
+Hotfix: v0.1.12's `resume-context` no-flag fallback called `/v1/agents/{name}/latest-session` which is admin-token-protected → non-operator peers (and operator's per-host bearer) hit HTTP 401 `invalid_admin_token`. Discovered empirically during the v0.5.3 `/resume-context` skill smoke test 2026-05-23.
+
+### Added
+
+- **`GET /v1/me/latest-session`** — self-scoped latest-session lookup. Per-host bearer only (no admin required); resolves the agent identity from the bearer via `auth.FromContext`. Optional `?exclude=<claude_session_id>` for the `--prior` post-/clear case. Returns the same payload shape as the admin endpoint. Self-lookup only — no path param means no possibility of reading another agent's sessions.
+
+### Fixed
+
+- **`agentctl resume-context` fallback path** — now calls `/v1/me/latest-session` instead of `/v1/agents/{name}/latest-session`. Works for any per-host bearer including non-operator peers. The admin endpoint stays as the operator's cross-agent lookup tool; the new endpoint is the self-scoped UX the v0.5.3 `/resume-context` skill actually needs.
+
+### Tests
+
+- Updated v0.1.12 commands_test.go cases (no-flag + --prior) to expect `/v1/me/latest-session`.
+- Admin endpoint `/v1/agents/{name_or_alias}/latest-session` unchanged + existing tests still pass.
+- Manual smoke confirmed: operator-Mac per-host bearer + `agentctl resume-context` (no flag) returns Splinter's most-recent session correctly.
+
 ## [0.1.12] — 2026-05-23
 
 Cross-/clear handoff UX fix. v0.1.11 closed the data-plane gap (improvement-notes get tagged with `agent_session_id`, `tool.used` filtered from `recent_events`, `recent_improvements` surfaces cross-cutting learnings) but Dale's same-day empirical test surfaced the next bottleneck: post-/clear, Claude Code mints a brand-new `$CLAUDE_SESSION_ID`, so an in-shell `agentctl resume-context` queries the new (empty) session instead of the prior one. The operator had to manually paste the old id. v0.1.12 removes that friction with a no-flag auto-fallback that asks the gateway "what was this agent's most recent session?" and threads the answer through. Also brings `agentctl checkpoint` into parity with v0.1.11's env-var fallback (the only emit-style subcommand still requiring an explicit flag).

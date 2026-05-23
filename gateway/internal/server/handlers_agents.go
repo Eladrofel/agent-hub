@@ -147,6 +147,57 @@ func (a *App) handleAgentLatestSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleMeLatestSession returns the authenticated caller's most-recent
+// session — same payload shape as handleAgentLatestSession but scoped to
+// the bearer's own identity (no admin token required). Backs the v0.5.3
+// /resume-context skill: post-/clear the operator has no admin context,
+// just their per-host bearer, but wants to look up their own prior
+// session. Self-lookup only — no path param means no possibility of
+// reading another agent's sessions.
+//
+// Optional ?exclude=<claude_session_id> skips that session id (the
+// post-/clear case where the current new-session id is known and the
+// caller wants the PRIOR one).
+func (a *App) handleMeLatestSession(w http.ResponseWriter, r *http.Request) {
+	caller := auth.FromContext(r.Context())
+	if caller == nil || caller.ID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "no caller identity in request context")
+		return
+	}
+
+	exclude := strings.TrimSpace(r.URL.Query().Get("exclude"))
+
+	sess, err := sessions.LatestForAgent(r.Context(), a.Store.Pool, caller.ID, exclude)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeErrorWithDetails(w, http.StatusNotFound, "no_sessions",
+				"agent has no sessions (or none not matching exclude filter)",
+				map[string]string{"agent_id": caller.ID, "agent_name": caller.Name})
+			return
+		}
+		a.Logger.Error("me latest session query failed", "agent_id", caller.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
+		return
+	}
+
+	resp := latestSessionResponse{
+		AgentID:   caller.ID,
+		AgentName: caller.Name,
+		LatestSession: &latestSessionItem{
+			ClaudeSessionID: sess.ClaudeSessionID,
+			StartedAt:       sess.StartedAt,
+			EndedAt:         sess.EndedAt,
+			Status:          sess.Status,
+			StartReason:     sess.StartReason,
+		},
+	}
+	if caller.Alias != "" {
+		aliasVal := caller.Alias
+		resp.Alias = &aliasVal
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // resolveAgentByHandle mirrors inbox.webhook.resolveAgent: case-INSENSITIVE
 // match on agents.name first, then mattermost_username. Returns
 // (agent_id, name, alias, ok). Alias is the empty string when the matched
