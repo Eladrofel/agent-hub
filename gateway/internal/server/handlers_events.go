@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 
 	"github.com/jackc/pgx/v5"
 
@@ -14,6 +15,13 @@ import (
 	"github.com/Eladrofel/agent-hub/gateway/internal/events"
 	"github.com/Eladrofel/agent-hub/gateway/internal/outbox"
 )
+
+// workItemKeyPattern matches concept-workflow work-item keys
+// ((feat|bugfix|improvement|hotfix|task)-NN-<name>). Used by writeResolveError
+// to detect when --task-key was given a wi-key shape value and return a
+// tailored error message pointing the caller at the correct surface
+// (event payload's wi_key field, not the legacy tasks table). v0.1.16.
+var workItemKeyPattern = regexp.MustCompile(`^(feat|bugfix|improvement|hotfix|task)-\d+-`)
 
 // validIntents is the locked v0.1.10 enum for payload.intent. Mirrored on
 // the agentctl side (commands.ValidIntents) so both halves of the wire
@@ -280,6 +288,26 @@ func (a *App) writeSanitiserBlocked(ctx context.Context, agentID, blockedType, p
 
 func (a *App) writeResolveError(w http.ResponseWriter, err error, field, value string) {
 	if errors.Is(err, pgx.ErrNoRows) {
+		// v0.1.16 — detect work-item key shape on --task-key lookups and
+		// return a tailored message pointing the caller at the right
+		// surface. The misleading CLI help text on agentctl event-emit /
+		// checkpoint ("e.g. feat-01-landing-page") sends agents here, but
+		// concept-workflow work-items are never inserted into the tasks
+		// table — wi-keys live in event payloads (payload.wi_key) for the
+		// v0.1.14+ agent.work-item.{claimed,finished} pair. Plain 422
+		// "unknown_reference" sent agents on extended hypothesis-chasing
+		// detours; this guides them straight to the correct surface.
+		if field == "task_key" && workItemKeyPattern.MatchString(value) {
+			writeErrorWithDetails(w, http.StatusUnprocessableEntity, "task_key_looks_like_work_item",
+				fmt.Sprintf("'%s' looks like a concept-workflow work-item key; the --task-key flag looks up the tasks table, which does NOT hold work-item keys. Either: omit --task-key (work-item keys live in event payloads), or use agentctl work-item claim/finish/active for work-item lifecycle.", value),
+				map[string]string{
+					"field":           field,
+					"value":           value,
+					"correct_surface": "agentctl work-item {claim,finish,active}",
+					"docs":            "references/work-item-coordination.md",
+				})
+			return
+		}
 		writeErrorWithDetails(w, http.StatusUnprocessableEntity, "unknown_reference",
 			"referenced row not found", map[string]string{"field": field, "value": value})
 		return

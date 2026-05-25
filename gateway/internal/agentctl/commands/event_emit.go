@@ -228,7 +228,7 @@ func newEventEmitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&summary, "summary", "", "human-readable summary")
 	cmd.Flags().StringVar(&payloadJSON, "json-payload", "", "payload as a JSON object")
 	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "", "Claude session ID")
-	cmd.Flags().StringVar(&taskKey, "task-key", "", "task key (e.g. feat-01-landing-page)")
+	cmd.Flags().StringVar(&taskKey, "task-key", "", "legacy `tasks` table key (NOT a concept-workflow work-item key; for those use `agentctl work-item …`)")
 	cmd.Flags().StringVar(&projectSlug, "project-slug", "", "project slug (defaults to AGENT_PROJECT_SLUG)")
 	cmd.Flags().StringVar(&branch, "branch", "", "git branch")
 	cmd.Flags().StringVar(&gitHeadSHA, "git-head-sha", "", "git HEAD SHA")

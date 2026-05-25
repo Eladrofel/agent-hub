@@ -119,7 +119,7 @@ func NewCheckpointCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "", "Claude session ID (defaults to $CLAUDE_SESSION_ID)")
-	cmd.Flags().StringVar(&taskKey, "task-key", "", "task key")
+	cmd.Flags().StringVar(&taskKey, "task-key", "", "legacy `tasks` table key (NOT a concept-workflow work-item key; for those use `agentctl work-item …`)")
 	cmd.Flags().StringVar(&checkpointType, "checkpoint-type", "", "checkpoint type")
 	cmd.Flags().StringVar(&status, "status", "", "status")
 	cmd.Flags().StringVar(&currentGoal, "current-goal", "", "current goal")
