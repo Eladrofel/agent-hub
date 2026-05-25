@@ -1,6 +1,8 @@
 # SETUP — terraform-agent-hub
 
-Operator-facing setup walkthrough. Pairs with `README.md`'s overview.
+Operator-facing setup walkthrough for a fresh agent-hub deployment. Pairs with `README.md`'s overview.
+
+**Currency:** Step 1 → Step 3 (VM provision + bring-up) match the v0.1.16 gateway. Step 5 (per-peer agent provisioning) uses the v0.3.0+ split flow (`/bootstrap-agent-events` + `/join-agent-events`); the legacy single `/setup-agent-events` skill referenced in older docs is a deprecated stub. End-to-end recipe across operator + N VMs lives in the plugin's `references/portable-setup-guide.md`; this doc covers the agent-hub side only.
 
 ## Prerequisites
 
@@ -59,13 +61,13 @@ sudo docker compose up -d
 sudo docker compose ps
 ```
 
-Expected on v0.1.1: 2 services healthy (`agent-hub-postgres`, `agent-hub-gateway`). `agent-hub-outbox` + `agent-hub-inbox-webhook` are behind the `v0.1.1` compose profile and won't start by default — they ship in v0.1.2 (Component C). To bring them up later: `docker compose --profile v0.1.1 up -d`.
+Expected on current (v0.1.16): four services healthy — `agent-hub-postgres`, `agent-hub-gateway`, `agent-hub-outbox`, `agent-hub-inbox-webhook`. The v0.1.1 compose-profile gating shipped in v0.1.2 has been retired; all services run by default.
 
 Smoke test:
 
 ```bash
 curl -fsSL http://10.0.5.38:8787/health
-# Expected: {"status":"ok","postgres":"ok"}
+# Expected (current v0.1.16): {"sanitiser_patterns":<N>,"status":"ok"}
 ```
 
 ## Step 4 — Configure the Mattermost outgoing webhook
@@ -73,42 +75,111 @@ curl -fsSL http://10.0.5.38:8787/health
 In Mattermost → Integrations → Outgoing Webhooks → Add:
 
 - **Content type:** `application/json`
-- **Trigger words:** leave empty (we trigger on channel membership, not word-match)
-- **Channel:** `agent-events` (create the channel first if needed)
+- **Trigger when:** `1` (first word matches) — load-bearing for the peer @-mention routing path (see v0.5.0 empirical finding in plugin CHANGELOG); see "Trigger words" below.
+- **Trigger words:** `@` (literal @-sign). Combined with `trigger_when=1`, this fires the webhook on any post whose first word starts with `@`. The gateway's outbox-worker (v0.1.15+) prepends `@<peer-alias>` to work-item events for exactly this reason — peer mentions become inbox-routed automatically.
+- **Channel:** `agent-events` (create the channel first if needed).
 - **Callback URL:** `http://10.0.5.38:8788/v1/inbox/webhook`
-- **Token:** paste the value you set for `MATTERMOST_INBOX_WEBHOOK_SECRET` in Step 2
+- **Token:** paste the value you set for `MATTERMOST_INBOX_WEBHOOK_SECRET` in Step 2.
 
-## Step 5 — From the operator Mac, run `/setup-agent-events`
+## Step 5 — Per-peer agent provisioning (split flow, v0.3.0+)
 
-In your consuming workspace (e.g., `~/projects/secureup/`), add to `.claude/concept-workflow.local.md` frontmatter:
+The legacy single `/setup-agent-events` skill was split in plugin v0.3.0 into operator-side bootstrap + per-VM join. The new flow is:
+
+### 5a. Operator-Mac config (v0.2.11+ split — operator-wide, fleet settings)
+
+Operator-wide settings live at `~/.config/concept-workflow/config.yaml` (paste-ready template at `references/agent-events-operator-config.template.yaml` in the plugin repo). Required keys:
 
 ```yaml
 agent-events:
   gateway-url: http://10.0.5.38:8787
-  vm-host: agent-hub
   per-vm-token-file: ~/.config/concept-workflow/agent-hub-token
-  mattermost-outbox-channel: agent-events
+  default-mattermost-outbox-channel: agent-events
   mattermost-inbox-webhook-secret: <same value as Step 2 / Step 4>
+  alias-map:
+    agent-operator-mac: Splinter
+    agent-1: Mikey
+    agent-2: Donnie
+    # add more as VMs come up
+  ssh-map:                              # optional; only needed for --prepare-vm fan-out
+    agent-1: claude-1
+    agent-2: claude-2
 ```
 
-Then from a Claude Code session on your Mac, run `/setup-agent-events`. The skill will:
+Per-workspace settings (project slug, role map, MM channel override) live in each `<workspace>/.claude/concept-workflow.local.md` frontmatter:
 
-1. Validate gateway reachability.
-2. Mint a token for the Mac itself, write it to `~/.config/concept-workflow/agent-hub-token` (chmod 600), register the Mac as `agent-operator-mac`.
-3. SSH-dispatch to each agent VM (per the workspace's SSH map) to install `agentctl` + provision per-VM tokens + register the agent.
-4. Run an end-to-end smoke test (emit a test event from each peer; verify it lands in Postgres).
+```yaml
+agent-events:
+  project-slug: secureup
+  role-map: {agent-1: frontend, agent-2: backend, agent-operator-mac: operator}
+```
+
+### 5b. From the operator Mac, run `/bootstrap-agent-events`
+
+```bash
+export AGENT_HUB_ADMIN_TOKEN=<the ADMIN_TOKEN from Step 2>
+# From a Claude Code session on the Mac:
+/bootstrap-agent-events
+# or, to also fan out the agentctl binary + per-VM tokens via SSH:
+/bootstrap-agent-events --prepare-vm claude-1 --prepare-vm claude-2
+```
+
+This will:
+
+1. Upsert the project on the gateway (using `project-slug` from the workspace).
+2. Register the operator Mac as the first peer (`agent-operator-mac`, alias `Splinter`).
+3. Mint a per-host token for the Mac, write to `~/.config/concept-workflow/agent-hub-token` (chmod 600).
+4. (With `--prepare-vm`) scp the `agentctl` binary + a one-time admin-scoped token to each VM listed under `ssh-map`, so the VM-side `/join-agent-events` has what it needs.
+5. (Alternative) `/bootstrap-agent-events --issue-join-code <agent-name>` mints a signed, single-use, TTL-bounded join-code for agents whose VMs the operator doesn't have SSH access to (federated path, v0.4.0+).
+
+### 5c. From each agent VM's own Claude Code session, run `/join-agent-events`
+
+This runs **on the VM itself**, NOT from the operator's Mac. Each VM owns its own bot identity.
+
+```bash
+# In the VM's Claude Code session:
+/join-agent-events
+# or, if joining via federated code:
+/join-agent-events --code <code-issued-by-operator>
+```
+
+The skill provisions: this agent's identity against the gateway, registers `last_seen_at`, smoke-tests an event emit + inbox round-trip, and runs `/join-agent-comms` for the Mattermost bot identity if `--with-comms` is passed.
+
+End-to-end recipe with the full operator + N-VM choreography lives at `references/portable-setup-guide.md` in the plugin repo.
 
 ## Step 6 — Verify
 
 ```bash
-# On the Mac, after /setup-agent-events:
+# On the Mac, after /bootstrap-agent-events + per-VM /join-agent-events:
 agentctl health
 # Expected: gateway reachable, token valid, last_seen_at updates.
 
-# Verify all 5 peers registered:
-psql "postgres://agent_hub:<password>@10.0.5.38:54329/agent_hub" \
+# Verify all peers registered (use the /agent-events-health skill from the
+# operator Mac for a richer report including outbox-worker, inbox-webhook,
+# MM reachability, and per-peer recent-event activity):
+/agent-events-health
+```
+
+Direct Postgres query (port 54329 is the localhost-only bind on the agent-hub VM, exposed for operator diagnostics over SSH tunnel):
+
+```bash
+ssh dale@10.0.5.38 \
+  sudo docker exec agent-hub-postgres psql -U agent_hub -d agent_hub \
   -c "select name, role, host_kind, last_seen_at from agents order by name;"
 ```
+
+### Verify the work-item peer-coordination path (v0.1.14+)
+
+```bash
+# From the operator Mac, source the agent-events env then exercise the
+# work-item lifecycle against a throwaway wi-key:
+source ~/.config/concept-workflow/agent-events.env
+agentctl work-item claim --wi-key feat-test-99-smoke --repo customer-web --branch smoke
+agentctl work-item active --wi-key feat-test-99-smoke --pretty   # expect total=1
+agentctl work-item finish --wi-key feat-test-99-smoke --repo customer-web
+agentctl work-item active --wi-key feat-test-99-smoke            # expect total=0
+```
+
+You should also see the corresponding posts in the `agent-events` Mattermost channel: 🔵 for the claim, ✅ for the finish, both leading with `@<peer-alias>` mentions (v0.1.15+) that route through the inbox-webhook back into each peer's inbox.
 
 ## Troubleshooting
 
@@ -118,10 +189,25 @@ psql "postgres://agent_hub:<password>@10.0.5.38:54329/agent_hub" \
 | Gateway returns `connection refused` after `docker compose up -d` | `.env` placeholder values still present | `cat /opt/agent-hub/.env` — make sure every `CHANGE_ME_FIRST_BOOT` is replaced. `docker compose down && docker compose up -d`. |
 | Outbox-worker logs `mattermost: unauthorized` | `MATTERMOST_TOKEN` invalid | Verify with `curl -fsSL -H "Authorization: Bearer $MATTERMOST_TOKEN" $MATTERMOST_URL/api/v4/users/me`. |
 | Inbox-webhook logs `invalid token` on incoming Mattermost posts | Webhook secret mismatch between Mattermost UI and `.env` | Re-paste the value in both places; they must match exactly. |
-| `/setup-agent-events` fails at "VM agent-1 unreachable" | SSH map in `concept-workflow.local.md` is stale | Check `concept-workflow.local.md` `ssh-map` block; verify `ssh agent-1@claude-1 echo ok` works. |
+| `/bootstrap-agent-events --prepare-vm` fails at "VM unreachable" | SSH alias in operator config is stale | Check `~/.config/concept-workflow/config.yaml` `agent-events.ssh-map` block; verify `ssh <alias> echo ok` works. |
+| `agentctl work-item active` returns HTTP 401 `invalid_token` | Per-host token file unreadable or hash drifted | `chmod 600 ~/.config/concept-workflow/agent-hub-token`; if persistent, re-run `/bootstrap-agent-events --register-mac-only` (operator Mac) or `/join-agent-events --rotate-token` (VM). |
+| `agentctl event emit --task-key feat-04-...` returns HTTP 422 `task_key_looks_like_work_item` | The `--task-key` flag is the legacy `tasks` table key, NOT a concept-workflow work-item key (v0.1.16 smart 422). | Omit `--task-key`; use `agentctl work-item {claim,finish,active}` for work-item lifecycle. |
 
 ## Maintenance
 
 - **Backups:** Postgres data volume is at `agent_hub_pg` (Docker named volume). Snapshot via `pg_dump` weekly; archive to off-VM storage. Terraform doesn't manage backups; configure separately.
-- **Updates to agent-hub itself:** `git pull && docker compose build && docker compose up -d`. Migrations idempotent; the gateway's `migrate` subcommand applies new SQL files when added.
-- **Moving the agent-hub to a new VM:** see plugin's `/move-agent-hub` skill (ROADMAP `#10` Component A).
+- **Updates to agent-hub itself:** on the agent-hub VM, `git pull && sudo docker compose build gateway && sudo docker compose up -d gateway` (the other services don't change as often; rebuild them individually if their Dockerfile shifts). Migrations are idempotent; the gateway's embedded migration runner applies new SQL files automatically on boot.
+- **Updating `agentctl` on operator Mac + every VM:** the agentctl binary is built locally via `make agentctl-all` and distributed manually. After bumping the gateway version, also bump `agentctl` so the client + server commit hashes match (otherwise `agentctl --version` reports an older commit). Recipe:
+  ```bash
+  # On the operator Mac, after pulling agent-hub master:
+  make agentctl-all
+  cp bin/agentctl-darwin-arm64 ~/.local/bin/agentctl
+  # Push to each VM (loop over ssh-map):
+  for vm in claude-1 claude-2; do
+    scp bin/agentctl-linux-amd64 "$vm":/tmp/a
+    ssh "$vm" 'sudo install -m 0755 -o root -g root /tmp/a /usr/local/bin/agentctl && rm /tmp/a'
+  done
+  ```
+  Verify with `agentctl --version` on each host.
+- **Moving the agent-hub to a new VM:** see plugin's `/move-agent-hub` skill.
+- **Periodic check:** `/agent-events-health` from the operator Mac surfaces gateway / Postgres / outbox-worker / inbox-webhook / MM / per-peer event-activity in one report; useful at the start of any session where the agent-events layer feels off.
