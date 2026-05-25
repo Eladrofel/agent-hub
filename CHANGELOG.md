@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.16] — 2026-05-25
+
+Smart 422 when `--task-key` is given a concept-workflow work-item key, plus help-text correction on `agentctl event-emit` + `checkpoint`. Closes a real-user-test confusion (2026-05-24): an agent ran agentctl with `--task-key feat-XX-...` and hit bare `HTTP 422 unknown_reference`, then spent cycles hypothesising the work-item.claimed event was session-orphaned and the WI row hadn't materialised. Wrong causal chain — the actual root cause: `--task-key` looks up the legacy `tasks` table, which is a different namespace than concept-workflow work-item keys. Work-items live in event payloads (`payload.wi_key`); the agentctl help text was misleadingly saying *"e.g. feat-01-landing-page"*.
+
+### Fixed — gateway `writeResolveError` namespace-mismatch detection
+
+- New `workItemKeyPattern` regex (`^(feat|bugfix|improvement|hotfix|task)-\d+-`) in `internal/server/handlers_events.go`. When a `task_key` lookup returns `pgx.ErrNoRows` AND the value matches the pattern, the handler returns HTTP 422 `task_key_looks_like_work_item` with a tailored message: *"'<value>' looks like a concept-workflow work-item key; the --task-key flag looks up the tasks table, which does NOT hold work-item keys. Either: omit --task-key (work-item keys live in event payloads), or use agentctl work-item claim/finish/active for work-item lifecycle."* Response details include `correct_surface: "agentctl work-item {claim,finish,active}"` for programmatic introspection.
+- Non-matching `task_key` values keep the original `unknown_reference` shape — only the agent-friendly pattern triggers the tailored message.
+
+### Fixed — agentctl `--task-key` help text on event-emit + checkpoint
+
+- Before: `"task key (e.g. feat-01-landing-page)"` (misleading — feat-01-landing-page is a wi-key, not a task_key).
+- After: `"legacy `tasks` table key (NOT a concept-workflow work-item key; for those use `agentctl work-item …`)"`.
+
+### Why
+
+The v0.5.4/v0.5.5 work-item lifecycle (claim, finish, active) deliberately does NOT entangle with the legacy `tasks` table — the rationale was "payload-JSON is sufficient and indexable" and a tasks-table materialisation would expand scope. That's still the right call, but it leaves the `--task-key` flag as a footgun: a flag named for work-item-ish concepts that doesn't accept work-item keys. v0.1.16 closes the gap on the discovery side (smart error + better help) rather than on the data side (no schema change).
+
+`go build ./...` clean. `go vet ./...` clean. All tests pass.
+
 ## [0.1.15] — 2026-05-23
 
 Proactive peer @-mentions on `agent.work-item.{claimed,finished}` events. Pairs with **plugin v0.5.5** (peer-coordination policy update banning operator-courier laundering). Closes the v0.5.4 real-work-test finding: Mikey claimed task-02-onboarding-stepper-scaffold correctly, but Donnie was concurrently planning a duplicate dispatch because the channel-only claim event didn't reach Donnie's inbox proactively.
