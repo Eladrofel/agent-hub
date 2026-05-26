@@ -84,7 +84,7 @@ func NewResumeContextCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "", "Claude session ID (defaults to $CLAUDE_SESSION_ID; if empty, falls back to this agent's most-recent session)")
+	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "", "Claude session ID (defaults to $CLAUDE_SESSION_ID, then to the SessionStart-written file at $CLAUDE_SESSION_ID_FILE or ~/.cache/concept-workflow/claude-session-id; if still empty, falls back to this agent's most-recent session)")
 	cmd.Flags().BoolVar(&prior, "prior", false, "fetch the most-recent session EXCLUDING the current $CLAUDE_SESSION_ID (the post-/clear handoff case)")
 	cmd.Flags().Bool("pretty", false, "indent JSON output")
 

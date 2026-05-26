@@ -72,6 +72,12 @@ func newFixture(t *testing.T) *testFixture {
 	t.Setenv(config.EnvTokenFile, tokenPath)
 	t.Setenv(config.EnvAgentName, "agent-test")
 	t.Setenv(config.EnvProjectSlug, "demo-project")
+	// v0.1.17 — disable the resolveClaudeSessionID file fallback by default.
+	// Without this, any cached ~/.cache/concept-workflow/claude-session-id
+	// on a developer's machine would leak into tests that expect empty
+	// session id semantics ("no flag, no env"). Tests that specifically
+	// exercise the file fallback override CLAUDE_SESSION_ID_FILE themselves.
+	t.Setenv(claudeSessionIDFileEnv, filepath.Join(dir, "no-such-csid-file"))
 	t.Setenv(config.EnvAuditLog, f.auditPath)
 	return f
 }
@@ -339,6 +345,63 @@ func TestEventEmit_ClaudeSessionIDFromEnv(t *testing.T) {
 	}
 	if strings.Contains(f.stderr.String(), "session-orphaned") {
 		t.Fatalf("stderr should NOT warn when env is set; got %q", f.stderr.String())
+	}
+}
+
+// v0.1.17 — file fallback for resolveClaudeSessionID. The SessionStart hook
+// writes the current session id to ~/.cache/concept-workflow/claude-session-id
+// (or whatever $CLAUDE_SESSION_ID_FILE points to) so bash subshells spawned
+// by Claude Code's Bash tool — which don't reliably inherit env vars from
+// the hook context — can still resolve the id without needing the explicit
+// --claude-session-id flag on every call.
+//
+// Precedence: flag → env → file → empty.
+
+func TestResolveClaudeSessionID_FlagWinsOverEverything(t *testing.T) {
+	tmp := t.TempDir()
+	idfile := filepath.Join(tmp, "csid")
+	if err := os.WriteFile(idfile, []byte("from-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_SESSION_ID", "from-env")
+	t.Setenv("CLAUDE_SESSION_ID_FILE", idfile)
+	if got := resolveClaudeSessionID("from-flag"); got != "from-flag" {
+		t.Fatalf("flag must win; got %q", got)
+	}
+}
+
+func TestResolveClaudeSessionID_EnvWinsOverFile(t *testing.T) {
+	tmp := t.TempDir()
+	idfile := filepath.Join(tmp, "csid")
+	if err := os.WriteFile(idfile, []byte("from-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_SESSION_ID", "from-env")
+	t.Setenv("CLAUDE_SESSION_ID_FILE", idfile)
+	if got := resolveClaudeSessionID(""); got != "from-env" {
+		t.Fatalf("env must win over file; got %q", got)
+	}
+}
+
+func TestResolveClaudeSessionID_FallsBackToFile(t *testing.T) {
+	tmp := t.TempDir()
+	idfile := filepath.Join(tmp, "csid")
+	if err := os.WriteFile(idfile, []byte("from-file-123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_SESSION_ID", "")
+	t.Setenv("CLAUDE_SESSION_ID_FILE", idfile)
+	if got := resolveClaudeSessionID(""); got != "from-file-123" {
+		t.Fatalf("should read from file; got %q", got)
+	}
+}
+
+func TestResolveClaudeSessionID_EmptyWhenAllUnset(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("CLAUDE_SESSION_ID", "")
+	t.Setenv("CLAUDE_SESSION_ID_FILE", filepath.Join(tmp, "nope-does-not-exist"))
+	if got := resolveClaudeSessionID(""); got != "" {
+		t.Fatalf("all-empty must resolve empty; got %q", got)
 	}
 }
 

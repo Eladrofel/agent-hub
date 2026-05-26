@@ -143,7 +143,7 @@ func newWorkItemClaimCmd() *cobra.Command {
 	cmd.Flags().StringVar(&branch, "branch", "", "branch name being created for this work-item (optional)")
 	cmd.Flags().BoolVar(&force, "force", false, "write a competing claim even if active claims exist (audit-visible)")
 	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "",
-		"Claude session ID (defaults to $CLAUDE_SESSION_ID; empty → warn-but-continue)")
+		"Claude session ID (defaults to $CLAUDE_SESSION_ID, then to the SessionStart-written file at $CLAUDE_SESSION_ID_FILE or ~/.cache/concept-workflow/claude-session-id; empty → warn-but-continue)")
 	cmd.Flags().Bool("json", false, "emit the full response body on stdout (default: stderr summary)")
 	return cmd
 }
@@ -241,7 +241,7 @@ func newWorkItemFinishCmd() *cobra.Command {
 	cmd.Flags().StringVar(&repo, "repo", "", "workspace submodule name (required)")
 	cmd.Flags().StringVar(&prURL, "pr-url", "", "pull-request URL just opened (optional)")
 	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "",
-		"Claude session ID (defaults to $CLAUDE_SESSION_ID; empty → warn-but-continue)")
+		"Claude session ID (defaults to $CLAUDE_SESSION_ID, then to the SessionStart-written file at $CLAUDE_SESSION_ID_FILE or ~/.cache/concept-workflow/claude-session-id; empty → warn-but-continue)")
 	cmd.Flags().Bool("json", false, "emit the full response body on stdout (default: stderr summary)")
 	return cmd
 }

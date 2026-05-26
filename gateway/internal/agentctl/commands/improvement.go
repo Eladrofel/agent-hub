@@ -274,7 +274,7 @@ func newImprovementEmitCmd() *cobra.Command {
 		fmt.Sprintf("event intent (one of: %s); absent = info; gateway requires role=operator for 'directive'",
 			strings.Join(ValidIntents, ", ")))
 	cmd.Flags().StringVar(&claudeSessionID, "claude-session-id", "",
-		"Claude session ID for cross-/clear handoff visibility (defaults to $CLAUDE_SESSION_ID; empty → warn-but-continue)")
+		"Claude session ID for cross-/clear handoff visibility (defaults to $CLAUDE_SESSION_ID, then to the SessionStart-written file at $CLAUDE_SESSION_ID_FILE or ~/.cache/concept-workflow/claude-session-id; empty → warn-but-continue)")
 	cmd.Flags().Bool("json", false, "emit the full response body on stdout (default: stderr summary)")
 
 	return cmd

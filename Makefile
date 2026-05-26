@@ -12,7 +12,7 @@ GATEWAY_DIR := gateway
 BIN_DIR     := bin
 PKG         := ./cmd/agentctl
 
-VERSION ?= 0.1.16
+VERSION ?= 0.1.17
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 LDFLAGS := -s -w \

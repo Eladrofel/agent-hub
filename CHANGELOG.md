@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.17] — 2026-05-26
+
+`resolveClaudeSessionID` file fallback. Closes a recurring footgun: Claude Code's Bash tool spawns subshells that don't reliably inherit `$CLAUDE_SESSION_ID`, so the v0.1.11 env fallback misses every bash-invocation of agentctl in practice. Empirical case 2026-05-26: `/checkpoint` skill consistently sees `$CLAUDE_SESSION_ID` empty in its bash subshell and has to fish the id out of the SessionStart payload by hand. Pairs with **concept-workflow plugin v0.5.7** (SessionStart hook writes the id to a cache file; SessionEnd hook removes it).
+
+### Added — file fallback in `resolveClaudeSessionID`
+
+Precedence chain becomes:
+
+1. Explicit `--claude-session-id` flag (unchanged; still wins).
+2. `$CLAUDE_SESSION_ID` env var (v0.1.11; unchanged; still wins over file).
+3. **NEW** — contents of the cache file at `$CLAUDE_SESSION_ID_FILE` (override) OR `~/.cache/concept-workflow/claude-session-id` (default). Plugin v0.5.7's SessionStart hook writes this file with the session id extracted from the hook's stdin JSON (which Claude Code DOES populate reliably).
+4. Empty string (unchanged; caller-decides whether to warn).
+
+Reads via `os.ReadFile` + `strings.TrimSpace`; soft-fails to empty on any I/O error. No new dependencies.
+
+### Updated — flag help text on every emit-style subcommand
+
+`agentctl checkpoint`, `event emit`, `improvement emit`, `work-item claim|finish`, `resume-context` — all `--claude-session-id` help strings now name the full precedence chain (`$CLAUDE_SESSION_ID` → `$CLAUDE_SESSION_ID_FILE` → default path) so operators can see at `--help` time why a flag-less invocation still works.
+
+### Added — test isolation (resolveClaudeSessionID file fallback)
+
+`newFixture` now sets `$CLAUDE_SESSION_ID_FILE` to a non-existent path in the test's temp dir by default, so cached session-id files in a developer's `~/.cache/concept-workflow/` don't leak into tests that expect empty-session-id semantics. Tests that specifically exercise the file fallback override `$CLAUDE_SESSION_ID_FILE` themselves.
+
+Four new unit tests cover the precedence: flag-wins-over-everything, env-wins-over-file, falls-back-to-file (incl. trailing-newline tolerance), empty-when-all-unset.
+
+### Net result
+
+Every agentctl emit-style subcommand now resolves the session id transparently from a bash subshell, no matter how the subshell was spawned. The v0.1.11 helper's original promise — "callers in Claude tool contexts shouldn't need to plumb the flag" — finally holds in the empirically common case.
+
+`go build ./...` clean. `go vet ./...` clean. All tests pass.
+
 ## [0.1.16] — 2026-05-25
 
 Smart 422 when `--task-key` is given a concept-workflow work-item key, plus help-text correction on `agentctl event-emit` + `checkpoint`. Closes a real-user-test confusion (2026-05-24): an agent ran agentctl with `--task-key feat-XX-...` and hit bare `HTTP 422 unknown_reference`, then spent cycles hypothesising the work-item.claimed event was session-orphaned and the WI row hadn't materialised. Wrong causal chain — the actual root cause: `--task-key` looks up the legacy `tasks` table, which is a different namespace than concept-workflow work-item keys. Work-items live in event payloads (`payload.wi_key`); the agentctl help text was misleadingly saying *"e.g. feat-01-landing-page"*.

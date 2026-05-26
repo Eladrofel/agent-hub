@@ -23,22 +23,59 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // claudeSessionIDEnv is the env-var name Claude Code sets in tool contexts.
 // Centralised so the spelling matches across resume_context.go + emit paths.
 const claudeSessionIDEnv = "CLAUDE_SESSION_ID"
 
+// claudeSessionIDFileEnv overrides the default cache-file path. v0.1.17.
+const claudeSessionIDFileEnv = "CLAUDE_SESSION_ID_FILE"
+
+// defaultClaudeSessionIDFile returns the path the concept-workflow plugin's
+// SessionStart hook writes (v0.5.7+). agentctl reads it as a third fallback
+// when neither the explicit flag nor $CLAUDE_SESSION_ID env is set. This
+// closes the gap empirically observed since v0.1.11: Claude Code's Bash
+// tool spawns subshells that don't reliably inherit $CLAUDE_SESSION_ID, so
+// the env fallback misses every bash-invocation of agentctl in practice.
+// Empty return (rare — only when $HOME can't be resolved) disables the
+// file fallback.
+func defaultClaudeSessionIDFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "concept-workflow", "claude-session-id")
+}
+
 // resolveClaudeSessionID returns the effective claude_session_id for an
-// emit-style call. Precedence: explicit --claude-session-id flag value, then
-// $CLAUDE_SESSION_ID, then empty string. Empty is a legitimate outcome for
-// non-session callers (one-off operator scripts); the caller decides whether
-// to warn.
+// emit-style call. Precedence (v0.1.17): explicit --claude-session-id flag
+// value → $CLAUDE_SESSION_ID env → cache-file contents (default path
+// $HOME/.cache/concept-workflow/claude-session-id, override via
+// $CLAUDE_SESSION_ID_FILE) → empty string. Empty is a legitimate outcome
+// for one-off operator scripts that run outside a Claude Code session
+// entirely; the caller decides whether to warn.
 func resolveClaudeSessionID(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
 	}
-	return os.Getenv(claudeSessionIDEnv)
+	if v := os.Getenv(claudeSessionIDEnv); v != "" {
+		return v
+	}
+	path := os.Getenv(claudeSessionIDFileEnv)
+	if path == "" {
+		path = defaultClaudeSessionIDFile()
+	}
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // warnMissingSessionID writes the standard "event will be session-orphaned"
