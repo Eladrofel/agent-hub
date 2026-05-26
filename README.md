@@ -121,8 +121,8 @@ See [SETUP.md](SETUP.md) for the full walkthrough. Short version:
 
 ## Versioning + commit identity
 
-- **Project version:** lives in `Makefile` (`VERSION ?=` line, baked into binaries via ldflags) + `CHANGELOG.md`. Currently `0.1.16`.
-- **Plugin compatibility:** `concept-workflow` plugin v0.2.8+ (ROADMAP `#10` Component A) is the first plugin release that consumes this project; the work-item peer-coordination pair (v0.1.14 gateway + v0.5.4 plugin) is the current floor for full feature parity, with v0.1.15 (peer @-mentions) + v0.1.16 (smart 422) + plugin v0.5.5 (operator-courier policy) + v0.5.6 (mid-session inbox poll) on top.
+- **Project version:** lives in `Makefile` (`VERSION ?=` line, baked into binaries via ldflags) + `CHANGELOG.md`. Currently `0.1.17`.
+- **Plugin compatibility:** `concept-workflow` plugin v0.2.8+ (ROADMAP `#10` Component A) is the first plugin release that consumes this project; the work-item peer-coordination pair (v0.1.14 gateway + v0.5.4 plugin) is the current floor for full feature parity, with v0.1.15 (peer @-mentions) + v0.1.16 (smart 422) + v0.1.17 (session-id file fallback) + plugin v0.5.5 (operator-courier policy) + v0.5.6 (mid-session inbox poll) + v0.5.7 (SessionStart writes session-id cache file) on top.
 - **Commit identity:** this project lives outside `~/projects/secureup/` so it uses the default `~/.gitconfig` identity (typically `Eladrofel`). This is the same identity that publishes the `concept-workflow` plugin to the GitHub marketplace.
 
 ## Related
@@ -133,7 +133,7 @@ See [SETUP.md](SETUP.md) for the full walkthrough. Short version:
 
 ## Status
 
-**`v0.1.16` — in active use.** Gateway endpoints + agentctl subcommands fleshed out and serving live traffic from the operator's fleet (operator-Mac + claude-1 + claude-2). Cross-/clear session handoff (`v0.1.11`–`v0.1.13`), work-item peer coordination (`v0.1.14`), proactive peer @-mentions (`v0.1.15`), and smart-422 namespace-mismatch detection (`v0.1.16`) all shipped and verified end-to-end.
+**`v0.1.17` — in active use.** Gateway endpoints + agentctl subcommands fleshed out and serving live traffic from the operator's fleet (operator-Mac + claude-1 + claude-2). Cross-/clear session handoff (`v0.1.11`–`v0.1.13`), work-item peer coordination (`v0.1.14`), proactive peer @-mentions (`v0.1.15`), smart-422 namespace-mismatch detection (`v0.1.16`), and the session-id-file fallback that fixes the long-standing `$CLAUDE_SESSION_ID` propagation gap in bash subshells (`v0.1.17`) all shipped and verified end-to-end.
 
 Schema is settled (no migrations since `001_init.sql` + small additive follow-ups in 002/003); the event-type column is `text` so future curated event types are additive-only with no DB changes. See `CHANGELOG.md` for the release narrative.
 
@@ -143,5 +143,6 @@ Schema is settled (no migrations since `001_init.sql` + small additive follow-up
 - **Improvement-notes:** durable + optionally MM-relayed captured-learning events, with `--intent` (info / directive / question / blocker / status), category enum, sanitiser-gated summary + details.
 - **Work-item peer coordination:** `agentctl work-item claim/finish/active`; the gateway's `agent.work-item.{claimed,finished}` curated events auto-relay to MM with peer @-mentions; `GET /v1/work-items/{wi-key}/active-claims` is the agent-readable pre-flight backing the plugin's `/start-work-item` Pre-flight 4 conflict check.
 - **Cross-/clear handoff:** post-`/clear` agent runs `agentctl resume-context` (no flags) and the gateway auto-walks to the agent's most-recent prior session, returns the full resume packet.
+- **Session-id resolution from bash subshells (v0.1.17):** every `agentctl` emit-style subcommand resolves `claude_session_id` transparently via flag → `$CLAUDE_SESSION_ID` env → `$CLAUDE_SESSION_ID_FILE` (or `~/.cache/concept-workflow/claude-session-id`, written by plugin v0.5.7's SessionStart hook). Closes the empirical gap where Claude Code's Bash tool spawns subshells that don't inherit the env var.
 - **Inbox routing:** Mattermost outgoing-webhook → inbox-webhook → per-agent `mattermost_inbox` rows, polled on `SessionStart` / `Stop` / throttled `PostToolUse`.
 - **§2.1 sanitiser** at write time; agent-side hook also pre-filters tool.used payloads.
