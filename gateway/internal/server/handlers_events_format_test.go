@@ -76,6 +76,68 @@ func TestFormatCuratedMessage_WorkItemForcedSuffixPreserved(t *testing.T) {
 	}
 }
 
+// v0.1.18 — peer-message format. Shape:
+//
+//	@<target> <intent-icon> <sender>: <summary>
+//
+// The leading @<target> is load-bearing for the MM outgoing-webhook routing
+// path. Icon comes from payload.intent (default 💬 for info).
+
+func TestFormatCuratedMessage_PeerMessageDefaultsToSpeechBalloon(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-1", Alias: "Mikey"}
+	got := formatCuratedMessage("agent.peer-message", agent,
+		"suggestions on task-04: consider memoising the row formatter",
+		map[string]any{"target_agent": "Donnie"})
+	want := "@Donnie \U0001f4ac Mikey: suggestions on task-04: consider memoising the row formatter"
+	if got != want {
+		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestFormatCuratedMessage_PeerMessageQuestionUsesQuestionMark(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-1", Alias: "Mikey"}
+	got := formatCuratedMessage("agent.peer-message", agent,
+		"are you blocked on task-04?",
+		map[string]any{"target_agent": "Donnie", "intent": "question"})
+	if !strings.HasPrefix(got, "@Donnie ❓ Mikey:") {
+		t.Fatalf("question intent should render ❓; got %q", got)
+	}
+}
+
+func TestFormatCuratedMessage_PeerMessageBlockerUsesNoEntrySign(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-2", Alias: "Donnie"}
+	got := formatCuratedMessage("agent.peer-message", agent,
+		"task-04 is blocked: forge auth missing",
+		map[string]any{"target_agent": "Splinter", "intent": "blocker"})
+	if !strings.HasPrefix(got, "@Splinter \U0001f6ab Donnie:") {
+		t.Fatalf("blocker intent should render 🚫; got %q", got)
+	}
+}
+
+func TestFormatCuratedMessage_PeerMessageNoTargetOmitsAtPrefix(t *testing.T) {
+	// Edge case: target_agent missing. Don't fabricate an @-prefix; render
+	// the rest of the message normally. Caller can still see it in MM, just
+	// won't trigger inbox routing.
+	agent := &auth.Agent{Name: "agent-1", Alias: "Mikey"}
+	got := formatCuratedMessage("agent.peer-message", agent,
+		"orphan message", nil)
+	if strings.HasPrefix(got, "@") {
+		t.Fatalf("no target_agent → no leading @; got %q", got)
+	}
+	if !strings.HasPrefix(got, "\U0001f4ac Mikey:") {
+		t.Fatalf("should still render icon+sender+summary; got %q", got)
+	}
+}
+
+func TestFormatCuratedMessage_PeerMessageAliasFallsBackToName(t *testing.T) {
+	agent := &auth.Agent{Name: "agent-3", Alias: ""}
+	got := formatCuratedMessage("agent.peer-message", agent,
+		"hello", map[string]any{"target_agent": "Splinter"})
+	if !strings.Contains(got, "agent-3:") {
+		t.Fatalf("alias-empty should fall back to Name; got %q", got)
+	}
+}
+
 func TestFormatImprovementNote_AliasPreferred(t *testing.T) {
 	agent := &auth.Agent{Name: "agent-operator-mac", Alias: "Splinter"}
 	got := formatCuratedMessage("agent.improvement-note", agent,

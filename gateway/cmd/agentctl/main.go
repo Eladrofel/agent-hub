@@ -12,6 +12,7 @@
 //	agentctl work-item claim --wi-key <k> --repo <r> [--branch <b>] [--force]
 //	agentctl work-item finish --wi-key <k> --repo <r> [--pr-url <u>]
 //	agentctl work-item active --wi-key <k> [--pretty]
+//	agentctl message <peer-alias> --summary <s> [--intent <info|question|blocker>] [--details <text-or-@file>]
 //	agentctl checkpoint --claude-session-id <id> --summary <s> [--next <n>...]
 //	agentctl resume-context [--claude-session-id <id>]
 //	agentctl inbox poll [--since <ts>]
@@ -75,6 +76,7 @@ func main() {
 	root.AddCommand(commands.NewCommsJoinCmd())
 	root.AddCommand(commands.NewImprovementCmd())
 	root.AddCommand(commands.NewWorkItemCmd())
+	root.AddCommand(commands.NewMessageCmd())
 
 	if err := root.Execute(); err != nil {
 		// Silent errors are the best-effort marker; treat as success.

@@ -43,6 +43,12 @@ var CuratedEventTypes = map[string]bool{
 	// alongside the durable Postgres row that backs the pre-flight conflict check.
 	"agent.work-item.claimed":  true,
 	"agent.work-item.finished": true,
+	// v0.1.18 — peer-targeted message. agentctl message <peer-alias> wraps this.
+	// The format function prepends @<target_agent> to the MM line, so the MM
+	// outgoing-webhook routes the post into the recipient's mattermost_inbox.
+	// Closes the two-surface gap where chat-emit posts to MM but never reached
+	// the agent-events bus, so peers had to be manually told "check Mattermost".
+	"agent.peer-message": true,
 }
 
 // IsCurated reports whether an event_type should be mirrored to Mattermost.

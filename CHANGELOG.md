@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.18] — 2026-05-28
+
+Peer-targeted message primitive. Closes the chat-emit ↔ agent-events two-surface gap empirically observed 2026-05-28: Mikey sent suggestions for Donnie via `/chat-emit`, which produced an MM post that didn't lead with `@`, so the MM outgoing-webhook never fired, so Donnie's `mattermost_inbox` never got the row, so Donnie's `/agent-inbox` poll returned empty even though the message existed in MM. The operator had to play man-in-the-middle: tell Donnie "check chat" before Donnie noticed. Pairs with **concept-workflow plugin v0.5.8** which adds the `/message-peer` skill + chat-emit guidance update.
+
+### Added — `agent.peer-message` curated event type
+
+- New entry in `CuratedEventTypes` (`internal/events/events.go`). Payload shape: `{target_agent: "<peer-alias>", intent: "info|question|blocker|status|directive", summary: "...", details: "..."}`. directive intent stays operator-gated by the existing v0.1.10 role check.
+- New `formatPeerMessage` in `internal/server/handlers_events_format.go`. Renders the chat-side line as `@<target> <intent-icon> <sender>: <summary>`. The leading `@<target>` is load-bearing: it's what triggers the MM outgoing-webhook (`trigger_when=1`, `trigger_word=@`) that writes the post into the recipient's `mattermost_inbox`. Without it the message would only live in MM, not in the agent-events bus.
+- Icon precedence: intent-based (info=💬, question=❓, blocker=🚫, status=📊, directive=⚡); default 💬 for unset intent.
+- Edge case: `target_agent` missing → no `@` prefix (caller can still see in MM; just doesn't trigger inbox routing). Verified by test.
+
+### Added — `agentctl message <peer-alias>` subcommand
+
+- New `internal/agentctl/commands/message.go`. Positional first arg is the recipient's MM alias (case-insensitive match per v0.1.8 #45). Required flag `--summary` (≤280 chars, matching improvement emit cap). Optional flags `--intent` (default info), `--details` (uncapped longer body; `@file` syntax supported same as improvement emit).
+- Wraps POST `/v1/events` with `event_type=agent.peer-message` and the validated payload. Sanitiser-blocked responses surface matched-pattern detail for operator triage (same pattern as `improvement emit`).
+- Registered in `cmd/agentctl/main.go` alongside `NewWorkItemCmd()`.
+- Reuses `resolveClaudeSessionID` (the v0.1.17 file fallback path), `runCall`/`callOpts`, audit log path — no new infrastructure.
+
+### Why
+
+Two surfaces for peer comms (MM and agent-events) with no bridge for the "I want to message a specific peer" case. The auto-relay path (v0.1.15) only bridges work-item events; the chat-emit path only writes to MM. `/message-peer` is the missing primitive — one round-trip writes durable Postgres + MM-with-@-mention; v0.5.6's mid-session inbox poll then surfaces the message to the recipient agent within 5 min without operator intervention.
+
+### Tests
+
+- 5 new unit tests in `handlers_events_format_test.go`: speech-balloon default for info intent, question/blocker intent icons, no-target-omits-@-prefix edge case, alias-falls-back-to-name when MM username unset.
+- `agentctl message` exercised by the live smoke at deploy time (operator-Mac sends → agent VM polls → message surfaces in inbox + MM channel).
+
+`go build ./...` clean. `go vet ./...` clean. All tests pass.
+
 ## [0.1.17] — 2026-05-26
 
 `resolveClaudeSessionID` file fallback. Closes a recurring footgun: Claude Code's Bash tool spawns subshells that don't reliably inherit `$CLAUDE_SESSION_ID`, so the v0.1.11 env fallback misses every bash-invocation of agentctl in practice. Empirical case 2026-05-26: `/checkpoint` skill consistently sees `$CLAUDE_SESSION_ID` empty in its bash subshell and has to fish the id out of the SessionStart payload by hand. Pairs with **concept-workflow plugin v0.5.7** (SessionStart hook writes the id to a cache file; SessionEnd hook removes it).

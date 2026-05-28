@@ -44,8 +44,64 @@ func formatCuratedMessage(eventType string, agent *auth.Agent, summary string, p
 		return formatWorkItem("\U0001f535", agent, summary) // 🔵
 	case "agent.work-item.finished":
 		return formatWorkItem("✅", agent, summary) // ✅
+	case "agent.peer-message":
+		return formatPeerMessage(agent, summary, payload)
 	}
 	return ""
+}
+
+// formatPeerMessage renders the chat-side body for an agent.peer-message
+// event. Shape:
+//
+//	@<target> <intent-icon> <sender>: <summary>
+//
+// The leading @<target> is load-bearing: it's what triggers the MM
+// outgoing-webhook (trigger_when=1, trigger_word=@) which writes the post
+// into the recipient's mattermost_inbox row. Without it the message would
+// only live in MM, not in the agent-events bus — defeating the whole point.
+//
+// Icon precedence: intent icon if set (info=💬, question=❓, blocker=🚫,
+// status=📊, directive=⚡), otherwise fall back to 💬 (speech balloon, the
+// default "this is a peer message" cue).
+//
+// target_agent in payload is the recipient's MM alias (Donnie/Mikey/etc.) —
+// case-insensitive matching, per the v0.1.8 #45 fix. agentctl resolves the
+// alias from CLI input without a gateway round-trip.
+func formatPeerMessage(agent *auth.Agent, summary string, payload map[string]any) string {
+	sender := "agent"
+	if agent != nil {
+		sender = callerDisplayName(agent)
+	}
+	target := ""
+	intent := ""
+	if payload != nil {
+		if v, ok := payload["target_agent"].(string); ok {
+			target = strings.TrimSpace(v)
+		}
+		if v, ok := payload["intent"].(string); ok {
+			intent = v
+		}
+	}
+
+	icon := "\U0001f4ac" // 💬 — default
+	switch intent {
+	case "question":
+		icon = "❓"
+	case "blocker":
+		icon = "\U0001f6ab" // 🚫
+	case "status":
+		icon = "\U0001f4ca" // 📊
+	case "directive":
+		icon = "⚡"
+	case "info":
+		icon = "\U0001f4ac" // 💬 — explicit info keeps the speech-balloon default
+	}
+
+	body := fmt.Sprintf("%s %s: %s", icon, sender, strings.TrimSpace(summary))
+	if target != "" {
+		body = fmt.Sprintf("@%s %s", target, body)
+	}
+	return body
 }
 
 // formatWorkItem renders the chat-side line for an agent.work-item.{claimed,
